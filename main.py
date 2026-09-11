@@ -11,7 +11,7 @@ ENV.init()
 
 def main() -> None:
   parser = argparse.ArgumentParser(
-    prog="llm-ccp",
+    prog="LocalMind",
     description="Local project management assistant.",
   )
   parser.add_argument(

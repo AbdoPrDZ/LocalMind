@@ -2,7 +2,7 @@
 
 ## About the project
 
-`llm-ccp` is a local, offline LLM platform: you talk to a local model (Qwen3‑4B
+`LocalMind` is a local, offline LLM platform: you talk to a local model (Qwen3‑4B
 GGUF via `llama-cpp-python`) through interchangeable interfaces. One shared
 core serves many front-ends — the `cmd` interface is done (`questionary` CLI),
 while `web`, `api`, and `desktop` are planned.
@@ -60,7 +60,7 @@ Commands:
 
 ## Quick facts
 
-- Project: `llm-ccp` — local, offline LLM platform with multiple interfaces
+- Project: `LocalMind` — local, offline LLM platform with multiple interfaces
   (`cmd` done; `web`/`api`/`desktop` planned).
 - One shared core, many front-ends: `apps/base.py` (`Chat` service) → `Agent` →
   local model (`llama-cpp-python`, Qwen3-4B GGUF) → generic CRUD tools.

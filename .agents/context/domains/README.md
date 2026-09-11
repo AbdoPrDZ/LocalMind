@@ -1,6 +1,6 @@
 # Domains
 
-Business-domain knowledge for `llm-ccp`, one file per meaningful domain.
+Business-domain knowledge for `LocalMind`, one file per meaningful domain.
 
 ## Current domains
 

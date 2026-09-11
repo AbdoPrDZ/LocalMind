@@ -1,6 +1,6 @@
 # Project Context
 
-AI-readable knowledge layer for `llm-ccp`, a local, LLM-powered project
+AI-readable knowledge layer for `LocalMind`, a local, LLM-powered project
 management assistant.
 
 ## What this is

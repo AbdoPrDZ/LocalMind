@@ -1,4 +1,4 @@
-# llm-ccp
+# LocalMind
 
 Local, offline LLM platform: talk to a local model (Qwen3‑4B GGUF via
 `llama-cpp-python`) through interchangeable interfaces.

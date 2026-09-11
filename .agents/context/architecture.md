@@ -2,7 +2,7 @@
 
 ## What this project is
 
-`llm-ccp` is a **platform for talking to a local LLM through multiple
+`LocalMind` is a **platform for talking to a local LLM through multiple
 interfaces**. One shared core, several front-ends: `cmd` (done), with `web`,
 `api` and `desktop` planned. The LLM runs entirely offline via
 `llama-cpp-python` and can call generic tools.

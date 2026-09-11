@@ -68,7 +68,7 @@ def interactive(chat: Chat) -> None:
 
 def main() -> None:
   parser = argparse.ArgumentParser(
-    prog="llm-ccp cmd",
+    prog="LocalMind cmd",
     description="Local project management assistant (command line).",
   )
   parser.add_argument(

@@ -1,6 +1,6 @@
 # Conventions
 
-Code style and structural rules to follow when touching `llm-ccp`.
+Code style and structural rules to follow when touching `LocalMind`.
 
 ## Style
 

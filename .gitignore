@@ -12,6 +12,9 @@ __pycache__/
 resources/models/
 resources/data/
 
+# Blueprints (to be discussed later)
+.agents/blueprints/GLOBAL_CONTEXT.md
+
 # OS
 Thumbs.db
 .DS_Store
