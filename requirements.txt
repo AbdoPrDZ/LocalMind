@@ -1,0 +1,6 @@
+llama-cpp-python
+sqlalchemy
+pydantic
+python-dotenv
+dotenv
+questionary

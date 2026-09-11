@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Local data
+resources/models/
+resources/data/
+
+# OS
+Thumbs.db
+.DS_Store

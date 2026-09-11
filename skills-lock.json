@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "project-context": {
+      "source": "AbdoPrDZ/ai-skills",
+      "sourceType": "github",
+      "skillPath": "skills/project-context/SKILL.md",
+      "computedHash": "6e0606fcdb234db0f513a3204d51c4b08713971a6042f27f01574e357a05bd3d"
+    }
+  }
+}
