@@ -14,14 +14,38 @@ a persisted conversation: `Chat`/`Message` rows in the SQLite DB.
   if the id is unknown.
 - `chat.send(text) -> str` — the one call an interface needs. Saves the user
   message, sends `[system (+context), user]` (NOT the full history) to the LLM,
-  saves the assistant reply, and returns it.
+  saves the assistant reply, and returns it. On the first exchange an untitled
+  chat gets a title: `_ensure_title()` asks the active LLM (`TITLE_PROMPT`,
+  `tools=None`, ~24 tokens, its usage is recorded too) and falls back to the
+  first user message on any failure (`_fallback_title`).
 - `chat.send_stream(text) -> Generator[str, None, None]` — same as `send` but
-  yields the reply in streaming chunks; the full reply is persisted once done.
-  Interfaces that stream print each chunk as it arrives.
+  yields the reply in streaming chunks; the full reply is persisted once done
+  (title generation runs on the completed path). Interfaces that stream print
+  each chunk as it arrives.
 - `chat.context` — the running conversation summary (see below).
 - `chat.history` — all previous `{"role", "content"}` messages (user/assistant).
 - `.tools` / `.agent` — optional access to registered tools and the agent.
 - `.id` / `.title` — the persisted chat's identity.
+- `chat.usage_session_id` — the currently open `Usage` session id (or `None`).
+- `chat.usage_summary()` — dict with the open session, totals for this chat,
+  global totals and totals by model.
+- `chat.reopen_usage(provider, model)` — closes the current usage session
+  (``ended_at`` set) and opens a new one for a different provider/model; used
+  by ``/select model``.
+- `chat.close()` — closes the usage session (`ended_at`); idempotent. Interfaces
+  call this when the conversation ends (the cmd app does it in a `finally`
+  after printing the summary).
+- `Chat.list_chats(limit=50)` — newest-first list of dicts with `id`, `title`,
+  `created_at`, `context`, `messages` (per-chat message count).
+
+### Usage accounting
+
+Tokens and estimated cost per chat session are stored in the `usage` table
+(`models/usage.py`, `services/usage.py`). `Chat.create()`/`Chat.load()` open a
+session, `send()`/`send_stream()` record the agent's accumulated
+provider-reported usage on completion, and `close()` ends it. Cost comes from
+`estimate_cost()` (Gemini token pricing only; local is free) — it is an
+estimate, the API reports no exact bill or remaining quota. See `database.md`.
 
 ### Running chat context
 
@@ -70,6 +94,12 @@ full history):
 - Handles two tool-call formats: native `tool_calls` and Qwen3 GGUF
   `<tool_call>...</tool_call>` JSON blocks parsed via `parse_tool_calls()`.
 - Executes tools, appends `{"role": "tool", "content": json.dumps(result)}`.
+- Accumulates token usage: `_accumulate_usage()` adds the provider's `usage`
+  dict (non-stream response or stream `{"usage": ...}` chunks; chunks without
+  `choices` are usage-only and skipped by the stream loop).
+- `take_usage()` — returns the accumulated `{prompt, completion, total}_tokens`
+  for the last `run`/`run_stream` and resets it. `Chat.send()` calls it once
+  streaming/non-streaming finishes and persists the totals.
 - `clean_answer()` removes the model's `thinking ... response` preamble and any
   stray `response` marker line, returning only the reply.
 - Loop ends when the model replies with plain text.
@@ -83,12 +113,49 @@ ABC for all tools. Each tool declares:
 - `call(arguments)` — validates via the input model, then executes.
 - `execute(arguments) -> Any` — implemented by subclasses.
 
-## LLM singleton (`utils/llm.py`)
+## LLM backend (`utils/llm.py`, `utils/providers/`)
 
-`get_llm()` lazily loads the `Llama` instance once. Settings come from `.env`
-(`MODEL_CONTEXT_WINDOW`, `MODEL_CPU_THREADS`, `MODEL_GPU_LAYERS`,
-`MODEL_VERBOSE`). Model location resolves via
-`MODELS_DIR` + `MODEL_NAME` + `model.gguf` (see `architecture.md`).
+`get_llm()` lazily builds the configured provider once and reuses it
+(singleton). Persisted provider/model overrides are applied first via
+`SettingsService.apply_to_env()`; `reset_llm()` clears the singleton so the
+next call rebuilds it with a new selection. The provider is selected by
+`LLM_PROVIDER` in `.env` (overridden by the `settings` table when set):
+`local` (default) or `gemini`. Providers live in `utils/providers/` and each
+exposes the same OpenAI-style `create_chat_completion(messages, tools,
+max_tokens, stream)` API (dict result / iterator of dict chunks), so the agent
+is backend-agnostic.
+
+- `LocalLLMProvider` — wraps the `llama-cpp-python` `Llama` singleton
+  (`MODEL_CONTEXT_WINDOW`, `MODEL_CPU_THREADS`, `MODEL_GPU_LAYERS`,
+  `MODEL_VERBOSE`; location via `MODELS_DIR` + `MODEL_NAME` + `model.gguf`).
+  Sets `stream_marker = "response"` so the agent hides the Qwen3 thinking
+  preamble while streaming.
+- `GeminiLLMProvider` — online via the `google-genai` SDK
+  (`GEMINI_API_KEY`, `GEMINI_MODEL`). Translates OpenAI-style messages/tool
+  schemas to Gemini contents/function declarations and normalizes responses
+  (text + function-call parts) back into OpenAI shape, including a `usage` key
+  (`prompt_tokens`/`completion_tokens`/`total_tokens`) from
+  `response.usage_metadata` on non-stream replies and a final `{"usage": ...}`
+  chunk on streams. Carries Gemini 3.x `thought_signature`/`id` through
+  tool-call round-trips; `stream_marker` is `None`, so text streams verbatim.
+
+Note that when `LLM_PROVIDER=gemini`, `ENV.init()` only requires
+`DATABASE_URL` (plus the provider's own settings) — `MODELS_DIR`/`MODEL_NAME`
+are optional. Stream-mode text/tool-call output is normalized per provider in
+`utils/agent.py` (marker-gated for Qwen3, verbatim for online providers).
+
+## Runtime settings (`services/settings.py`)
+
+`.env` holds the defaults; the `settings` table holds the runtime selection.
+
+- `SettingsService.get/set`, `set_provider`, `set_model`, `apply_to_env`.
+- `resolve_provider()` — settings override else `LLM_PROVIDER` (default
+  `"local"`).
+- `resolve_model(provider)` — settings override else `GEMINI_MODEL` for gemini
+  (default `DEFAULT_GEMINI_MODEL`) or `MODEL_NAME` for local.
+- `Chat.create()`/`Chat.load()` open usage sessions with the resolved
+  provider/model; the cmd app validates and persists a new choice via
+  `/select model` (see `workflows.md`).
 
 ## Global memory (`services/`, `tools/memory.py`)
 

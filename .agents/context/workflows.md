@@ -43,14 +43,50 @@ Qwen3, whole answer chunked otherwise). `_stream_strip_context()` strips any
 `<context>...</context>` block from the stream and the full reply + context are
 saved on completion.
 
+Usage workflow: `Chat.create()`/`Chat.load()` open a `Usage` session; after each
+`send()`, `Agent.take_usage()` returns the tokens the provider reported and
+`UsageService.record()` accumulates them (plus estimated cost) into the session.
+On exit the interface calls `chat.close()` — the cmd app prints a per-session
+plus global summary first, then closes. Full history is available via
+`scripts/usage_report.py` (global, per-chat, per-model).
+
 ## CMD interface details (`apps/cmd/main.py`)
 
 - No prompt argument → `questionary.text` interactive loop; `exit`/`quit`
-  (or Ctrl+C) ends it.
-- With a prompt argument → single answer, then exits.
+  (or Ctrl+C) ends it. **Lazy chat creation**: no chat row exists until the
+  first real (non-command) message, which calls `Chat.create()` and announces
+  the tools/model. Single-shot `python main.py cmd "p"` creates one for the
+  prompt. `--chat <id>` resumes the given chat instead. Because chats are
+  created lazily, `main()` calls `init_db()` itself at startup so
+  command-only sessions (`/chats`, `/usage`) work on a fresh database.
+- Lines starting with `/` are handled locally by `SLASH_COMMANDS` and are
+  NEVER persisted as messages — an unknown `/...` command prints an error and
+  is not forwarded to the assistant. Commands that need a chat (`/usage`,
+  `/context`, `/global`, `/tools`) print a hint until the first message
+  exists; `/chats`, `/settings`, `/select ...`, `/h`, `/q` work chat-less.
+- Slash commands (interactive): `/h`/`/help` help, `/q`/`/quit` end, `/usage`
+  show usage summary, `/context` show the chat context, `/g`/`/gc`/`/global`
+  show the global-memory snapshot (`build_global_context`), `/chats` list
+  chats, `/select chat <id>` resume another chat (closing the old usage
+  session), `/select model <provider> <name>` persist a provider/model switch,
+  `/settings` show the active selection, `/tools` list tools.
+- `/select model` validates provider (must be in `utils.providers.PROVIDERS`),
+  checks `GEMINI_API_KEY` for gemini and an installed `model.gguf` for local,
+  persists the choice via `SettingsService` (settings table), calls
+  `reset_llm()`, and reopens the chat's usage session
+  (`Chat.reopen_usage`) so accounting matches the new provider/model. The
+  next `get_llm()` builds the new provider (overrides are applied to env by
+  `SettingsService.apply_to_env()`). `.env` remains the default. Without an
+  active chat the switch is persisted but no session is opened yet.
+- Titles: the first `send()`/`send_stream()` on an untitled chat generates
+  and persists a short title (LLM, falling back to the first user message —
+  see `api.md`); `/chats` then shows it instead of "(untitled)".
 - `--chat <id>` resumes a given chat instead of creating a new one
   (verbalized as "Chat #<id> …" in interactive mode).
 - Prints registered tool names on startup.
+- On exit (wrapped in `try/finally`): prints a usage summary (session token
+  counts + cost, chat totals, global totals, per-model breakdown), then
+  `chat.close()` stamps the session `ended_at`.
 
 ## Adding an interface
 

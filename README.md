@@ -1,10 +1,23 @@
 # LocalMind
 
-Local, offline LLM platform: talk to a local model (Qwen3‑4B GGUF via
-`llama-cpp-python`) through interchangeable interfaces.
+LLM platform: talk to a local model (Qwen3 GGUF via `llama-cpp-python`) or an
+online model (Gemini) through interchangeable interfaces.
 
 One shared core, many front-ends. The `cmd` interface is done (`questionary`
 CLI); `web`, `api`, and `desktop` are planned.
+
+- [Architecture](#architecture)
+- [Requirements](#requirements)
+- [Setup](#setup)
+- [LLM backends](#llm-backends)
+- [Usage](#usage)
+  - [`python main.py cmd` arguments](#python-mainpy-cmd-arguments)
+  - [Interactive slash commands](#interactive-slash-commands)
+  - [Runtime model selection](#runtime-model-selection)
+- [Scripts](#scripts)
+  - [`scripts/install_model.py`](#scriptsinstall_modelpy)
+  - [`scripts/usage_report.py`](#scriptsusage_reportpy)
+- [Project context for agents](#project-context-for-agents)
 
 ## Architecture
 
@@ -17,7 +30,8 @@ shared service (apps/base.py)   Chat: ENV init, DB init, agent build,
     │
 agent        (utils/agent.py)  tool-calling loop, handles native + Qwen3 <tool_call>
     │
-local model  (utils/llm.py)    llama-cpp singleton, Qwen3-4B GGUF
+LLM backend  (utils/llm.py)    provider factory (get_llm) over
+             (utils/providers/)  local llama-cpp OR online Gemini (OpenAI-style API)
     │
 tools        (tools/model.py)  generic CRUD tools generated from the model registry
     │
@@ -34,10 +48,20 @@ bounded snapshot is injected into every prompt, and the model retrieves/extends
 it through `search_global_memory`, `get_memory`, `get_chat_context`,
 `search_chat_history`, and `save_memory`.
 
+Usage (tokens + estimated cost) is tracked per chat session in the `usage`
+table: a session opens when a chat starts/resumes, accumulates tokens on every
+`send()`, and closes when the chat exits. Cost is an estimate only (Gemini is
+billed per token; local runs are tracked but free). The cmd app prints a
+summary on exit; full per-chat/per-model reports are available with:
+
+```cmd
+python scripts/usage_report.py
+```
+
 ## Requirements
 
 - Python 3.11+
-- A local GGUF model (see below)
+- A local GGUF model (offline mode) **or** a Gemini API key (online mode)
 
 ## Setup
 
@@ -46,9 +70,10 @@ install.cmd
 ```
 
 This creates `.venv`, then installs `requirements.txt`
-(`llama-cpp-python`, `sqlalchemy`, `pydantic`, `python-dotenv`, `questionary`).
+(`llama-cpp-python`, `google-genai`, `sqlalchemy`, `pydantic`,
+`python-dotenv`, `questionary`).
 
-Download the model:
+Download the model (only needed for offline mode):
 
 ```cmd
 python scripts/install_model.py qwen3-4b-instruct-gguf
@@ -69,6 +94,26 @@ MODEL_CPU_THREADS=8
 MODEL_GPU_LAYERS=0
 ```
 
+## LLM backends
+
+The backend is switched with `LLM_PROVIDER` in `.env`:
+
+- **`local`** (default) — runs the GGUF model offline via `llama-cpp-python`
+  (`MODELS_DIR`/`MODEL_NAME` must point at a downloaded model).
+- **`gemini`** — talks to Google's Gemini API over the network
+  (`google-genai`). Only `DATABASE_URL` plus the Gemini settings are used;
+  `MODELS_DIR`/`MODEL_NAME` are not required.
+
+```dotenv
+LLM_PROVIDER=gemini
+GEMINI_API_KEY=your-api-key          # https://aistudio.google.com/apikey
+GEMINI_MODEL=gemini-3.5-flash        # default if omitted
+```
+
+Providers live in `utils/providers/` and all speak the same OpenAI-style
+chat/completion API, so the tool-calling loop in `utils/agent.py` works
+unchanged with either backend.
+
 ## Usage
 
 Run from the project root:
@@ -80,6 +125,96 @@ python main.py                                 & rem defaults to cmd
 ```
 
 `web`, `api`, and `desktop` currently raise `NotImplementedError`.
+
+### `python main.py cmd` arguments
+
+```cmd
+python main.py cmd [prompt] [--chat CHAT_ID]
+```
+
+| Argument      | Description                                                        |
+| ------------- | ------------------------------------------------------------------ |
+| `prompt`      | Ask a single question and exit. Omit it to start the interactive `questionary` loop. |
+| `--chat <id>` | Resume an existing chat by id instead of starting a new one (verbalized as "Chat #<id> …"). |
+
+### Interactive slash commands
+
+A chat is only created for a **real message** — starting the app (or running
+all-command sessions) creates no chat row, and a line starting with `/` is
+handled locally instead of being sent to the assistant. On the first real
+message the chat is created and the model generates a short **title** for it
+(falling back to the first user message if the call fails). Unknown `/`
+commands are rejected locally, never saved as messages.
+
+| Command          | Action                                                          |
+| ---------------- | --------------------------------------------------------------- |
+| `/h`, `/help`    | Show the command help.                                          |
+| `/q`, `/quit`    | End the session.                                                |
+| `/usage`         | Show token/cost usage for this chat and in total (by model).    |
+| `/context`       | Show the running chat context summary.                          |
+| `/g`, `/global`  | Show the global memory context (cross-chat knowledge).          |
+| `/chats`         | List all chats (id, created, message count, context preview).   |
+| `/select chat <id>` | Switch to (resume) another chat.                             |
+| `/select model <provider> <name>` | Switch LLM provider/model (persisted).   |
+| `/settings`      | Show the active provider/model and whether it is overridden.    |
+| `/tools`         | List the tools the assistant can call.                          |
+
+Anything else is sent to the assistant as a prompt.
+
+### Runtime model selection
+
+`/select model <provider> <name>` switches the LLM at runtime and **persists**
+the choice in the `settings` table — the `.env` values stay as defaults:
+
+```cmd
+/select model gemini gemini-3.5-flash-lite
+/select model local qwen3-4b-instruct-gguf
+```
+
+The provider must be one of `PROVIDERS` (`local`, `gemini`); a gemini selection
+requires `GEMINI_API_KEY` in `.env`, and a local selection requires the model to
+be installed (`scripts/install_model.py <name>`). The active provider/model is
+written into the environment before the LLM provider is (re)built, and usage
+accounting records the newly selected provider/model for new sessions.
+
+On exit (interactive or single-shot) the app prints a usage summary for the
+session (tokens + estimated cost, plus global totals by model) and closes the
+usage session.
+
+## Scripts
+
+Extra command-line tooling lives in `scripts/`.
+
+### `scripts/install_model.py`
+
+Downloads GGUF models into `resources/models/<name>/model.gguf`:
+
+```cmd
+python scripts/install_model.py <name> [<name> ...]   & rem install one or more models
+python scripts/install_model.py --all                 & rem install every model in the registry
+python scripts/install_model.py --list                & rem list the registry and exit
+```
+
+| Argument | Description                                             |
+| -------- | ------------------------------------------------------- |
+| `names`  | Model name(s) from the registry (see `--list`) to install. |
+| `--all`  | Install every model in the registry.                    |
+| `--list` | Print name / size / description for each registry model, then exit. |
+
+Requires `huggingface-hub`; downloads from Hugging Face in the background.
+
+### `scripts/usage_report.py`
+
+Prints the usage accounting table (`usage` DB table):
+
+```cmd
+python scripts/usage_report.py             & rem global + per-chat + per-model totals
+python scripts/usage_report.py --chat 3    & rem totals for chat #3 only
+```
+
+| Argument     | Description                                                    |
+| ------------ | -------------------------------------------------------------- |
+| `--chat <id>`| Limit the report to a single chat id (its sessions, not just its aggregate). |
 
 ## Project context for agents
 

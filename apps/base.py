@@ -23,15 +23,18 @@ from utils.env import ENV  # noqa: E402
 
 ENV.init()
 
-from sqlalchemy import select  # noqa: E402
+from sqlalchemy import func, select  # noqa: E402
 
 from database import get_session, init_db  # noqa: E402
 from models.chat import Chat as ChatRecord  # noqa: E402
 from models.message import Message as MessageRecord  # noqa: E402
 from services.global_context import build_global_context  # noqa: E402
+from services.settings import resolve_model, resolve_provider  # noqa: E402
+from services.usage import UsageService  # noqa: E402
 from tools.memory import build_memory_tools  # noqa: E402
 from tools.model import build_crud_tools  # noqa: E402
-from utils.agent import Agent  # noqa: E402
+from utils.agent import Agent, clean_answer  # noqa: E402
+from utils.llm import get_llm  # noqa: E402
 from utils.tool import Tool  # noqa: E402
 
 SYSTEM_PROMPT = ENV.get_system_prompt("You are a helpful assistant that can access the local database and perform CRUD operations.")
@@ -54,6 +57,12 @@ After EVERY answer, append the COMPLETE updated CHAT CONTEXT as the very LAST pa
 """
 
 CONTEXT_TAG_RE = re.compile(r"<context>(.*?)</context>", re.DOTALL | re.IGNORECASE)
+
+#: Short-prompt used to ask the model for a chat title on the first exchange.
+TITLE_PROMPT = (
+  "Write a very short title for this chat (4-8 words max, no quotes, no "
+  "punctuation). Reply with ONLY the title.\n\nUser: {message}"
+)
 
 
 def _limit_context(context: str) -> str:
@@ -139,6 +148,33 @@ def _stream_strip_context(
     context_out[0] = _limit_context(context_buffer)
 
 
+def _fallback_title(message: str) -> Optional[str]:
+  """A plain-text title from the first user message (no LLM call)."""
+  title = re.sub(r"\s+", " ", message).strip()
+  return title[:60] if title else None
+
+
+def _generated_title(message: str) -> tuple[Optional[str], Optional[dict]]:
+  """Ask the active LLM for a short chat title.
+
+  Returns ``(title, usage)``; *usage* is the token count of the tiny
+  title-generating call so accounting stays complete, ``None`` when the call
+  failed or produced nothing to show.
+  """
+  try:
+    llm = get_llm()
+    result = llm.create_chat_completion(
+      messages=[{"role": "user", "content": TITLE_PROMPT.format(message=message[:200])}],
+      tools=None,
+      max_tokens=24,
+    )
+    content = result["choices"][0]["message"].get("content") or ""
+    content = clean_answer(content).strip().strip("'\"“”`").strip()
+    return (content[:60] or None), result.get("usage")
+  except Exception:
+    return None, None
+
+
 def _build_agent(
   system_prompt: Optional[str] = None,
   max_tokens: int = 1024,
@@ -169,9 +205,11 @@ class Chat:
       existing = Chat.load(chat.id)                 # resume later
   """
 
-  def __init__(self, record: ChatRecord, agent: Agent) -> None:
+  def __init__(self, record: ChatRecord, agent: Agent, usage_session_id: int | None = None) -> None:
     self.record = record
     self.agent = agent
+    self._usage_session_id = usage_session_id
+    self._titled = False
 
   @classmethod
   def create(
@@ -189,10 +227,18 @@ class Chat:
       session.add(record)
       session.commit()
       session.refresh(record)
+      session.expunge(record)
     finally:
       session.close()
 
-    return cls(record, agent)
+    provider = resolve_provider()
+    usage_session_id = UsageService.start_session(
+      record.id,
+      provider,
+      resolve_model(provider),
+    )
+
+    return cls(record, agent, usage_session_id)
 
   @classmethod
   def load(
@@ -216,7 +262,14 @@ class Chat:
     finally:
       session.close()
 
-    return cls(record, agent)
+    provider = resolve_provider()
+    usage_session_id = UsageService.start_session(
+      record.id,
+      provider,
+      resolve_model(provider),
+    )
+
+    return cls(record, agent, usage_session_id)
 
   @property
   def id(self) -> int:
@@ -253,6 +306,88 @@ class Chat:
     """The running chat context summary, or ``None`` if none exists yet."""
     return self.record.context
 
+  @property
+  def usage_session_id(self) -> Optional[int]:
+    """The currently open usage session for this chat, or ``None``."""
+    return self._usage_session_id
+
+  def _record_usage(self, usage: dict) -> None:
+    """Persist the tokens spent by the last ``send`` into the open session."""
+    if self._usage_session_id is None:
+      return
+    if not usage.get("total_tokens"):
+      return
+    UsageService.record(
+      self._usage_session_id,
+      usage.get("prompt_tokens", 0),
+      usage.get("completion_tokens", 0),
+    )
+
+  @staticmethod
+  def list_chats(limit: int = 50) -> list[dict]:
+    """Return a recent list of chats with message counts (newest first)."""
+    session = get_session()
+    try:
+      counts = dict(
+        session.execute(
+          select(
+            MessageRecord.chat_id,
+            func.count(MessageRecord.id),
+          ).group_by(MessageRecord.chat_id)
+        ).all()
+      )
+      rows = session.scalars(
+        select(ChatRecord).order_by(ChatRecord.id.desc()).limit(limit)
+      ).all()
+      return [
+        {
+          "id": row.id,
+          "title": row.title,
+          "created_at": row.created_at,
+          "context": row.context,
+          "messages": counts.get(row.id, 0),
+        }
+        for row in rows
+      ]
+    finally:
+      session.close()
+
+  def reopen_usage(self, provider: str, model: str) -> None:
+    """Close the current usage session and open a new one (provider switch).
+
+    Used when the user runs ``/select model`` at runtime: the old session
+    is stamped with ``ended_at`` and totals persist; the new session
+    accounts for the new provider/model.
+    """
+    if self._usage_session_id is not None:
+      UsageService.close_session(self._usage_session_id)
+    self._usage_session_id = UsageService.start_session(self.id, provider, model)
+
+  def close(self) -> None:
+    """Close the chat's usage session (idempotent), if one is open.
+
+    Interfaces call this when the conversation ends (e.g. on ''exit''),
+    which sets the session's ``ended_at`` timestamp. Token totals remain.
+    """
+    if self._usage_session_id is not None:
+      UsageService.close_session(self._usage_session_id)
+      self._usage_session_id = None
+
+  def usage_summary(self) -> dict:
+    """Current totals for this chat's open session plus global aggregates.
+
+    Returns ``None`` entries when the session is already closed or unknown.
+    """
+    session = None
+    if self._usage_session_id is not None:
+      session = UsageService.get_session(self._usage_session_id) or None
+    return {
+      "session": session,
+      "chat_totals": UsageService.totals_for_chat(self.id),
+      "global_totals": UsageService.totals(),
+      "by_model": UsageService.totals_by_model(),
+    }
+
   def _system_prompt(self) -> str:
     """The system prompt plus a global-memory snapshot and the chat-context instructions."""
     sections = [self.agent.system_prompt]
@@ -288,6 +423,41 @@ class Chat:
     finally:
       session.close()
 
+  def _first_user_message(self, fallback: str) -> str:
+    """The earliest persisted user message, used as the title-generation basis."""
+    try:
+      for row in self.history:
+        if row["role"] == "user":
+          return row["content"]
+    except Exception:
+      pass
+    return fallback
+
+  def _set_title(self, title: str) -> None:
+    self.record.title = title
+    session = get_session()
+    try:
+      record = session.get(ChatRecord, self.id)
+      if record is not None:
+        record.title = title
+        session.commit()
+    finally:
+      session.close()
+
+  def _ensure_title(self, user_message: str) -> None:
+    """Generate and persist a title once, on the first real exchange."""
+    if self.record.title or self._titled:
+      return
+    self._titled = True
+    basis = self._first_user_message(user_message)
+    title, usage = _generated_title(basis)
+    if usage:
+      self._record_usage(usage)
+    if not title:
+      title = _fallback_title(basis)
+    if title:
+      self._set_title(title)
+
   def send(self, user_message: str) -> str:
     """Persist and send a new user message, return the assistant's reply.
 
@@ -306,11 +476,14 @@ class Chat:
 
     answer = self.agent.run(messages)
 
+    self._record_usage(self.agent.take_usage())
+
     new_context, clean = _extract_context(answer)
     if new_context is not None:
       self._set_context(new_context)
 
     self._add_message("assistant", clean)
+    self._ensure_title(user_message)
     return clean
 
   def send_stream(self, user_message: str) -> Generator[str, None, None]:
@@ -345,8 +518,11 @@ class Chat:
     finally:
       # Only persist when generation actually finished; a failed/interrupted
       # stream leaves the user message persisted but saves no assistant reply
-      # or context update.
-      if completed and parts:
-        self._add_message("assistant", "".join(parts).strip())
-      if completed and context_out[0] is not None:
-        self._set_context(context_out[0])
+      # or context update. Usage is recorded once the stream completes.
+      if completed:
+        if parts:
+          self._add_message("assistant", "".join(parts).strip())
+        self._record_usage(self.agent.take_usage())
+        if context_out[0] is not None:
+          self._set_context(context_out[0])
+        self._ensure_title(user_message)

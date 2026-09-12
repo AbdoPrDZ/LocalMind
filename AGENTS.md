@@ -2,10 +2,11 @@
 
 ## About the project
 
-`LocalMind` is a local, offline LLM platform: you talk to a local model (Qwen3‑4B
-GGUF via `llama-cpp-python`) through interchangeable interfaces. One shared
-core serves many front-ends — the `cmd` interface is done (`questionary` CLI),
-while `web`, `api`, and `desktop` are planned.
+`LocalMind` is an LLM platform: you talk to a local model (Qwen3‑4B GGUF via
+`llama-cpp-python`, offline) or an online model (Gemini via `google-genai`)
+through interchangeable interfaces, selected by `LLM_PROVIDER` in `.env`. One
+shared core serves many front-ends — the `cmd` interface is done
+(`questionary` CLI), while `web`, `api`, and `desktop` are planned.
 
 The core is generic: `apps/base.py` exposes a `Chat` service (replacing the old
 `LLMBridge`) that any interface calls with `chat.send(prompt)`. Each `Chat` is a
@@ -60,10 +61,12 @@ Commands:
 
 ## Quick facts
 
-- Project: `LocalMind` — local, offline LLM platform with multiple interfaces
-  (`cmd` done; `web`/`api`/`desktop` planned).
+- Project: `LocalMind` — LLM platform with interchangeable interfaces
+  (`cmd` done; `web`/`api`/`desktop` planned), running on a local model
+  (`llama-cpp-python`, Qwen3 GGUF) or online (Gemini, `google-genai`).
 - One shared core, many front-ends: `apps/base.py` (`Chat` service) → `Agent` →
-  local model (`llama-cpp-python`, Qwen3-4B GGUF) → generic CRUD tools
+  LLM provider (`utils/llm.py` factory over `utils/providers/`; `LLM_PROVIDER`
+  in `.env` selects `local` or `gemini`) → generic CRUD tools
   (`tools/model.py`) and controlled global-memory tools (`tools/memory.py`;
   `MemoryService` in `services/memory.py`, `Memory` table in `models/memory.py`).
   A small bounded global-context snapshot is auto-injected into the prompt.

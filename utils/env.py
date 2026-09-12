@@ -3,8 +3,13 @@ from pathlib import Path
 
 import dotenv
 
+# Always required, regardless of the LLM backend.
 REQUIRED_ENV_VARS = [
   "DATABASE_URL",
+]
+
+# Only required when running the local llama-cpp backend.
+LOCAL_REQUIRED_ENV_VARS = [
   "MODELS_DIR",
   "MODEL_NAME",
 ]
@@ -18,7 +23,13 @@ class ENV:
   def init():
     dotenv.load_dotenv(ENV_PATH, override=False)
 
-    for var in REQUIRED_ENV_VARS:
+    required = list(REQUIRED_ENV_VARS)
+
+    provider = ENV.get_llm_provider()
+    if provider == "local":
+      required += LOCAL_REQUIRED_ENV_VARS
+
+    for var in required:
       if os.getenv(var) is None:
         raise ValueError(f"Environment variable {var} is required but not set.")
 
@@ -28,6 +39,22 @@ class ENV:
 
     if required and value is None:
       raise ValueError(f"Environment variable {key} is required but not set.")
+
+    return value
+
+  @staticmethod
+  def get_llm_provider() -> str:
+    return (ENV.get("LLM_PROVIDER", default="local") or "local").strip().lower()
+
+  @staticmethod
+  def get_gemini_api_key() -> str:
+    value = ENV.get("GEMINI_API_KEY")
+
+    if not value:
+      raise ValueError(
+        "GEMINI_API_KEY is required when LLM_PROVIDER=gemini. "
+        "Get one at https://aistudio.google.com/apikey."
+      )
 
     return value
 

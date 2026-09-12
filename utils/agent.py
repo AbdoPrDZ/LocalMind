@@ -73,6 +73,23 @@ class Agent:
     self.tool_map = {tool.name: tool for tool in tools}
     self.system_prompt = system_prompt
     self.max_tokens = max_tokens
+    self.usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+  def _accumulate_usage(self, usage) -> None:
+    """Add a provider ``usage`` dict to the running totals for this send."""
+    if not usage:
+      return
+    prompt = max(int(usage.get("prompt_tokens") or 0), 0)
+    completion = max(int(usage.get("completion_tokens") or 0), 0)
+    self.usage["prompt_tokens"] += prompt
+    self.usage["completion_tokens"] += completion
+    self.usage["total_tokens"] += prompt + completion
+
+  def take_usage(self) -> dict:
+    """Return the accumulated usage for the last run and reset the counter."""
+    usage = dict(self.usage)
+    self.usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    return usage
 
   def run(self, messages: list[dict]) -> str:
     """Run the tool-loop against a full message history.
@@ -90,6 +107,8 @@ class Agent:
         tools=[tool.schema() for tool in self.tools],
         max_tokens=self.max_tokens,
       )
+
+      self._accumulate_usage(response.get("usage"))
 
       message = response["choices"][0]["message"]
       messages.append(message)
@@ -122,10 +141,12 @@ class Agent:
         else:
           result = tool.call(arguments)
 
-        # Qwen3 template expects tool results wrapped in a "tool" message;
-        # it renders them as <tool_response> blocks automatically.
+        # OpenAI-style tool response. `name` lets remote providers pair the
+        # result with the right function; `tool_call_id` grounds native calls.
         messages.append({
           "role": "tool",
+          "name": name,
+          "tool_call_id": call.get("id"),
           "content": json.dumps(result),
         })
 
@@ -139,9 +160,9 @@ class Agent:
 
     Two output modes:
 
-    - Qwen3 template (marker present): text is yielded only after the
-      ``response`` marker line, so thinking is stripped while streaming.
-    - No marker (plain text model): the cleaned answer is emitted in chunks.
+    - Preamble marker set (e.g. Qwen3 template): text is yielded only after
+      the ``response`` marker line, so thinking is stripped while streaming.
+    - No marker (online/plain-text providers): text is streamed verbatim.
     """
     llm = get_llm()
 
@@ -157,18 +178,29 @@ class Agent:
 
       content = ""
       answer_started = False
+      streamed_live = False
       native_calls: list[dict] = []
 
       for chunk in stream:
+        # Usage-only chunks (no choices) carry token counts and nothing to
+        # display — accumulate them and move on.
+        if "choices" not in chunk:
+          self._accumulate_usage(chunk.get("usage"))
+          continue
+
         delta = chunk["choices"][0]["delta"]
         piece = delta.get("content") or ""
 
         if piece:
           content += piece
 
-          # Only show text that comes AFTER the "response" marker
-          # (i.e. the actual answer, not the thinking preamble).
-          if not answer_started:
+          if llm.stream_marker is None:
+            # Plain provider (no thinking preamble): stream verbatim.
+            streamed_live = True
+            yield piece
+          elif not answer_started:
+            # Only show text that comes AFTER the "response" marker
+            # (i.e. the actual answer, not the thinking preamble).
             marker = RESPONSE_MARKER_RE.search(content)
             if marker:
               answer_started = True
@@ -181,14 +213,18 @@ class Agent:
         for call in delta.get("tool_calls") or []:
           native_calls.append(call)
 
-      messages.append({"role": "assistant", "content": content})
+      assistant = {"role": "assistant", "content": content}
+      if native_calls:
+        assistant["tool_calls"] = native_calls
+      messages.append(assistant)
 
       tool_calls = native_calls or parse_tool_calls(content)
 
       if not tool_calls:
-        # Final round. If the model used no thinking marker, the loop above
-        # yielded nothing, so fall back to chunked emission of the clean answer.
-        if not answer_started:
+        # Final round. Content already streamed live needs no fallback; only
+        # when nothing was emitted (e.g. a thinking preamble never reached the
+        # marker) do we fall back to chunked emission of the clean answer.
+        if not answer_started and not streamed_live:
           answer = clean_answer(content)
           step = 40
           for i in range(0, len(answer), step):
@@ -216,5 +252,7 @@ class Agent:
 
         messages.append({
           "role": "tool",
+          "name": name,
+          "tool_call_id": call.get("id"),
           "content": json.dumps(result),
         })

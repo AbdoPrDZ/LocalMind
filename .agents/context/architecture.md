@@ -26,8 +26,12 @@ tools        (tools/model.py)  generic CRUD tools generated from registry
     │        (tools/memory.py)  controlled global-memory tools
     │
 services     (services/memory.py) MemoryService; global-context builder
+             (services/usage.py)  UsageService; token/cost accounting per session
+             (services/settings.py) SettingsService; runtime provider/model
+                                   overrides (settings table, `.env` is default)
     │
-local model  (utils/llm.py)    llama-cpp singleton, Qwen3-4B GGUF
+LLM backend  (utils/llm.py)    provider factory (get_llm) over
+             (utils/providers/)  local llama-cpp OR online Gemini (OpenAI-style API)
     │
 database     (database.py)     SQLAlchemy + SQLite
 ```
@@ -35,6 +39,9 @@ database     (database.py)     SQLAlchemy + SQLite
 ## Data flow (chat)
 
 1. An interface calls `Chat.create()` (or `Chat.load(id)`), then `chat.send(text)`.
+   Creating/resuming a chat opens a `Usage` session (`UsageService.start_session`)
+   that records the provider and model; the interface calls `chat.close()` on
+   exit to stamp `ended_at`.
 2. `send()` saves the user message, builds `[system (+global context snapshot +
    context instructions + current chat summary), user]` and hands it to
    `Agent.run(messages)` — the full message history is NOT sent.
@@ -42,8 +49,10 @@ database     (database.py)     SQLAlchemy + SQLite
 4. If the model asks for tools, the agent executes them and feeds results back.
 5. Repeats until the model produces a plain-text answer.
 6. Any `<context>...</context>` block in the reply is saved as the new chat
-   context and stripped; `send()` saves the cleaned assistant reply and
-   returns it.
+   context and stripped; `send()` saves the cleaned assistant reply and returns it.
+7. The agent accumulates provider-reported token usage (`take_usage()`); each
+   `send()`/`send_stream()` records it into the open session. Cost is estimated
+   per token (Gemini pricing in `services/usage.py`; local is tracked but free).
 
 Global memory sits under the per-chat context: memories persist across chats
 (`services/memory.py`, `models/memory.py`), and a small bounded snapshot of them
@@ -54,11 +63,13 @@ retrieve more on demand via `search_global_memory` / `get_chat_context` /
 ## Configuration
 
 All runtime config lives in `.env` at the project root (loaded by
-`utils/env.py`). Required vars: `DATABASE_URL`, `MODELS_DIR`, `MODEL_NAME`.
+`utils/env.py`). `DATABASE_URL` is always required. `LLM_PROVIDER` picks the
+backend: `local` (default) additionally requires `MODELS_DIR`, `MODEL_NAME`;
+`gemini` uses `GEMINI_API_KEY` and optional `GEMINI_MODEL` (online).
 Relative paths in `.env` are resolved against the **current working directory**
 — run from the project root.
 
-Model layout: the GGUF is a fixed name `model.gguf` inside a per-model
+Local model layout: the GGUF is a fixed name `model.gguf` inside a per-model
 directory, resolved as `MODELS_DIR/MODEL_NAME/model.gguf`. Current setup:
 `MODELS_DIR=./resources/models`, `MODEL_NAME=qwen3-4b-instruct-gguf`.
 
@@ -70,3 +81,7 @@ is unset. The `Chat` service uses it for every conversation.
 Model defaults: Qwen3-4B, 4096 context, CPU only.
 See `conventions.md` for the reminder that `ENV.init()` must precede any import
 that resolves env-dependent values.
+
+Runtime selection: `.env` holds default provider/model; `settings` table
+(`services/settings.py`) holds the user's `/select model` override, applied to
+the environment before the LLM provider is built (`utils/llm.py`).

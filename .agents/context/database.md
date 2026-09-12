@@ -59,3 +59,40 @@ timestamps via `utils.time.utcnow`.
 - No Alembic/migration system exists: `init_db()` runs
   `BaseModel.metadata.create_all(engine)`. Importing `models.memory` in
   `database.py` is what registers the table.
+
+## Usage accounting (`models/usage.py`)
+
+`Usage` (table `usage`) is a private accounting store: one row per chat session,
+tracking token counts and estimated cost. Like `Memory` it is **not** registered
+via `@register_model`, so the LLM can neither see nor touch it.
+
+- Fields: `chat_id` FK → `chats.id` (indexed), `provider`, `model`,
+  `started_at`, `ended_at` (nullable, set on exit), `prompt_tokens`,
+  `completion_tokens`, `total_tokens`, `cost`.
+- Written only through `UsageService` (`services/usage.py`): `start_session`
+  (on `Chat.create()`/`Chat.load()`), `record` (after each `send()`), `close_session`
+  (from `Chat.close()` on exit). Aggregations: `totals()`, `totals_for_chat()`,
+  `totals_by_chat()`, `totals_by_model()`.
+- Cost is an estimate: `estimate_cost()` uses `GEMINI_PRICING_PER_1M` (model
+  suffixes `-preview`/`-latest` stripped via `model_base()`); non-gemini
+  providers cost 0. The Gemini API exposes no exact billed amount or remaining
+  quota. Importing `models.usage` in `database.py` registers the table.
+
+## Runtime settings (`models/settings.py`)
+
+`Setting` (table `settings`) is a simple key→value store, also **not**
+registered via `@register_model`. It persists the user's runtime LLM
+selection (keys `provider`, `<provider>_model`); the `.env` values
+(`LLM_PROVIDER`, `GEMINI_MODEL`, `MODEL_NAME`) remain the fallback defaults.
+
+- Written only through `SettingsService` (`services/settings.py`): `get`/
+  `set`, `set_provider`, `set_model`, `apply_to_env` (pushes overrides into
+  `os.environ` before a provider is built). `get` tolerates a missing table
+  (returns the default) so it is safe before `init_db()`.
+- Resolution helpers: `resolve_provider()` (setting else `LLM_PROVIDER` or
+  `"local"`) and `resolve_model(provider)` (setting else `GEMINI_MODEL`/
+  `MODEL_NAME`/`unknown`). Used by usage accounting, `get_llm()` and the cmd
+  app's `/settings` display.
+- `utils/llm.py::reset_llm()` drops the cached provider singleton so the next
+  call rebuilds it with the new selection. Importing `models.settings` in
+  `database.py` registers the table.
