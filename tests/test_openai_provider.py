@@ -4,8 +4,8 @@ import os
 import pytest
 
 os.environ["LLM_PROVIDER"] = "openai"
-os.environ["OPENAI_API_KEY"] = "openrouter-test-key"
-os.environ["GEMINI_API_KEY"] = "gemini-test-key"
+os.environ["LLM_OPENAI_API_KEY"] = "openrouter-test-key"
+os.environ["LLM_GEMINI_API_KEY"] = "gemini-test-key"
 
 from utils.providers.openai import (  # noqa: E402
   OpenAILLMProvider,
@@ -28,8 +28,8 @@ def test_is_gemini_model():
 
 @pytest.fixture()
 def provider():
-  os.environ["OPENAI_API_KEY"] = "openrouter-test-key"
-  os.environ["GEMINI_API_KEY"] = "gemini-test-key"
+  os.environ["LLM_OPENAI_API_KEY"] = "openrouter-test-key"
+  os.environ["LLM_GEMINI_API_KEY"] = "gemini-test-key"
   return OpenAILLMProvider()
 
 
@@ -59,25 +59,25 @@ def test_router_model_requires_key():
   from utils.env import ENV
 
   try:
-    os.environ.pop("OPENAI_API_KEY", None)
-    os.environ.pop("OPENROUTER_API_KEY", None)
+    os.environ.pop("LLM_OPENAI_API_KEY", None)
+    os.environ.pop("LLM_OPENROUTER_API_KEY", None)
     provider = OpenAILLMProvider()
     provider.model = "openrouter/free"
-    with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+    with pytest.raises(ValueError, match="LLM_OPENAI_API_KEY"):
       provider._endpoint()
   finally:
-    os.environ["OPENAI_API_KEY"] = "openrouter-test-key"
+    os.environ["LLM_OPENAI_API_KEY"] = "openrouter-test-key"
 
 
 def test_gemini_model_via_openai_requires_key():
   try:
-    os.environ.pop("GEMINI_API_KEY", None)
+    os.environ.pop("LLM_GEMINI_API_KEY", None)
     provider = OpenAILLMProvider()
     provider.model = "gemini-3.5-flash"
-    with pytest.raises(ValueError, match="GEMINI_API_KEY"):
+    with pytest.raises(ValueError, match="LLM_GEMINI_API_KEY"):
       provider._endpoint()
   finally:
-    os.environ["GEMINI_API_KEY"] = "gemini-test-key"
+    os.environ["LLM_GEMINI_API_KEY"] = "gemini-test-key"
 
 
 def test_payload(provider):
@@ -200,7 +200,7 @@ def test_error_text_429_includes_rate_limit_hint():
   )
   assert "HTTP 429" in err
   assert "LLM_PROVIDER=local" in err
-  assert "GEMINI_API_KEY" in err
+  assert "LLM_GEMINI_API_KEY" in err
 
 
 def test_provider_reports_429_with_hint(provider, monkeypatch):

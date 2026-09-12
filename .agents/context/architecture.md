@@ -103,14 +103,19 @@ The agent's extra tools never touch things the user hasn't scoped to it:
 
 All runtime config lives in `.env` at the project root (loaded by
 `utils/env.py`). `DATABASE_URL` is always required. `LLM_PROVIDER` picks the
-backend: `local` (default) additionally requires `MODELS_DIR`, `MODEL_NAME`;
-`gemini` uses `GEMINI_API_KEY` and optional `GEMINI_MODEL` (online); `openai`
-serves free routers AND Gemini through one OpenAI-compatible interface — model
-ids starting with `gemini-` go to Gemini (`GEMINI_API_KEY`,
-`GEMINI_OPENAI_BASE_URL`), anything else routes to the free backend
-(`OPENAI_API_KEY`/`OPENROUTER_API_KEY`, `OPENAI_BASE_URL` default
-`https://openrouter.ai/api/v1`, `OPENAI_MODEL` default `openrouter/free`;
-~140 free model ids in `resources/models/free_models.json`).
+backend: `local` (default) additionally requires `LLM_LOCAL_MODELS_DIR`,
+`LLM_LOCAL_MODEL_NAME`; `gemini` uses `LLM_GEMINI_API_KEY` and optional
+`LLM_GEMINI_MODEL` (online); `openai` serves free routers AND Gemini through
+one OpenAI-compatible interface — model ids starting with `gemini-` go to
+Gemini (`LLM_GEMINI_API_KEY`, `LLM_GEMINI_OPENAI_BASE_URL`), anything else
+routes to the free backend (`LLM_OPENAI_API_KEY`/`LLM_OPENROUTER_API_KEY`,
+`LLM_OPENAI_BASE_URL` default `https://openrouter.ai/api/v1`,
+`LLM_OPENAI_MODEL` default `openrouter/free`; ~140 free model ids in
+`resources/models/free_models.json`). `LLM_PROVIDER=free` uses a keyless
+endpoint selected by `LLM_FREE_ENDPOINT`/`LLM_FREE_MODEL` (or overridden by
+`LLM_FREE_BASE_URL`). Locally, the per-backend model vars are
+`LLM_LOCAL_CONTEXT_WINDOW`, `LLM_LOCAL_CPU_THREADS`, `LLM_LOCAL_GPU_LAYERS`,
+`LLM_LOCAL_VERBOSE`.
 Relative paths in `.env` are resolved against the **current working directory**
 — run from the project root.
 
@@ -121,8 +126,9 @@ commands); `WEB_SEARCH_PROVIDER=bing` (only bing/no-key is implemented so far);
 facts; `0` disables).
 
 Local model layout: the GGUF is a fixed name `model.gguf` inside a per-model
-directory, resolved as `MODELS_DIR/MODEL_NAME/model.gguf`. Current setup:
-`MODELS_DIR=./resources/models`, `MODEL_NAME=qwen3-4b-instruct-gguf`.
+directory, resolved as `LLM_LOCAL_MODELS_DIR/LLM_LOCAL_MODEL_NAME/model.gguf`.
+Current setup: `LLM_LOCAL_MODELS_DIR=./resources/models`,
+`LLM_LOCAL_MODEL_NAME=qwen3-4b-instruct-gguf`.
 
 The system prompt is no longer hardcoded. `SYSTEM_PROMPT_PATH` (default none)
 points to a markdown file read at import time (`ENV.get_system_prompt(default)`),

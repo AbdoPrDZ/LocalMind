@@ -1,5 +1,5 @@
 {
-  "_note": "Free models copied from opencode's model registry (.cache/opencode/models.json). Model ids work with LLM_PROVIDER=openai: pick one, set OPENAI_MODEL=<id>, and point OPENAI_BASE_URL at the provider's 'api' value (OPENAI_API_KEY or the provider's env key). Gemini models are reachable through the same provider without having to choose a base url (ids starting with 'gemini').",
+  "_note": "Free models copied from opencode's model registry (.cache/opencode/models.json). Model ids work with LLM_PROVIDER=openai: pick one, set LLM_OPENAI_MODEL=<id>, and point LLM_OPENAI_BASE_URL at the provider's 'api' value (LLM_OPENAI_API_KEY or the provider's env key). Gemini models are reachable through the same provider without having to choose a base url (ids starting with 'gemini').",
   "providers": {
     "bothub": {
       "name": "Bothub",
@@ -40,7 +40,7 @@
       "name": "OpenRouter",
       "api": "https://openrouter.ai/api/v1",
       "env": [
-        "OPENROUTER_API_KEY"
+        "LLM_OPENROUTER_API_KEY"
       ],
       "models": {
         "cohere/north-mini-code:free": {

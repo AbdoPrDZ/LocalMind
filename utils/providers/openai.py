@@ -5,10 +5,11 @@ backend:
 
 - ``gemini-...`` models  → Gemini's OpenAI-compatible endpoint
   (``https://generativelanguage.googleapis.com/v1beta/openai/``) using
-  ``GEMINI_API_KEY``;
+  ``LLM_GEMINI_API_KEY``;
 - any other model        → the configured free/OpenAI-compatible router
   (default OpenRouter, ``https://openrouter.ai/api/v1``) using
-  ``OPENAI_API_KEY`` (or ``OPENROUTER_API_KEY``) and ``OPENAI_BASE_URL``.
+  ``LLM_OPENAI_API_KEY`` (or ``LLM_OPENROUTER_API_KEY``) and
+  ``LLM_OPENAI_BASE_URL``.
 
 Non-streaming and streaming (SSE) responses keep the OpenAI chat-completions
 shape, so the ``Agent`` stays provider-agnostic. Native ``tool_calls`` pass
@@ -103,7 +104,7 @@ def _error_text(base_url: str, status_code: int, body: str) -> str:
       " | Rate limited (HTTP 429): the free-router daily quota is likely "
       "exhausted. Wait for the daily reset, add credits, or switch provider "
       "(`LLM_PROVIDER=local` for the offline model, or `gemini` with "
-      "`GEMINI_API_KEY` set)."
+      "`LLM_GEMINI_API_KEY` set)."
     )
   return message
 
@@ -160,14 +161,14 @@ class OpenAILLMProvider(LLMProvider):
   stream_marker = None
 
   def __init__(self) -> None:
-    self.model = ENV.get("OPENAI_MODEL", default=DEFAULT_OPENAI_MODEL) or DEFAULT_OPENAI_MODEL
-    self._openai_base_url = ENV.get("OPENAI_BASE_URL", default=DEFAULT_OPENAI_BASE_URL)
-    self._openai_api_key = ENV.get("OPENAI_API_KEY") or ENV.get("OPENROUTER_API_KEY")
+    self.model = ENV.get("LLM_OPENAI_MODEL", default=DEFAULT_OPENAI_MODEL) or DEFAULT_OPENAI_MODEL
+    self._openai_base_url = ENV.get("LLM_OPENAI_BASE_URL", default=DEFAULT_OPENAI_BASE_URL)
+    self._openai_api_key = ENV.get("LLM_OPENAI_API_KEY") or ENV.get("LLM_OPENROUTER_API_KEY")
     self._gemini_base_url = ENV.get(
-      "GEMINI_OPENAI_BASE_URL",
+      "LLM_GEMINI_OPENAI_BASE_URL",
       default=DEFAULT_GEMINI_OPENAI_BASE_URL,
     )
-    self._gemini_api_key = ENV.get("GEMINI_API_KEY")
+    self._gemini_api_key = ENV.get("LLM_GEMINI_API_KEY")
 
     import httpx
 
@@ -180,7 +181,7 @@ class OpenAILLMProvider(LLMProvider):
       key = self._gemini_api_key
       if not key:
         raise ValueError(
-          "GEMINI_API_KEY is required when using a Gemini model through "
+          "LLM_GEMINI_API_KEY is required when using a Gemini model through "
           "LLM_PROVIDER=openai. Get one at https://aistudio.google.com/apikey."
         )
       return self._gemini_base_url, key
@@ -188,8 +189,8 @@ class OpenAILLMProvider(LLMProvider):
     key = self._openai_api_key
     if not key:
       raise ValueError(
-        "OPENAI_API_KEY (or OPENROUTER_API_KEY) is required when using free "
-        "models through LLM_PROVIDER=openai."
+        "LLM_OPENAI_API_KEY (or LLM_OPENROUTER_API_KEY) is required when using "
+        "free models through LLM_PROVIDER=openai."
       )
     return self._openai_base_url, key
 
@@ -198,8 +199,8 @@ class OpenAILLMProvider(LLMProvider):
       "Authorization": f"Bearer {api_key}",
       "Content-Type": "application/json",
     }
-    referer = ENV.get("OPENAI_REFERER", default="https://github.com/LocalMind")
-    title = ENV.get("OPENAI_TITLE", default="LocalMind")
+    referer = ENV.get("LLM_OPENAI_REFERER", default="https://github.com/LocalMind")
+    title = ENV.get("LLM_OPENAI_TITLE", default="LocalMind")
     return {
       **request_headers,
       "HTTP-Referer": referer,

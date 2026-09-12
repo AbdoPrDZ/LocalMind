@@ -118,7 +118,7 @@ class GeminiLLMProvider(LLMProvider):
 
     self._types = types
     self._client = genai.Client(api_key=ENV.get_gemini_api_key())
-    self.model = ENV.get("GEMINI_MODEL", default=DEFAULT_GEMINI_MODEL)
+    self.model = ENV.get("LLM_GEMINI_MODEL", default=DEFAULT_GEMINI_MODEL)
 
   def _config(self, tools: Optional[list[dict]], max_tokens: int, system_instruction: str):
     types = self._types

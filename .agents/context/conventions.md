@@ -34,3 +34,6 @@ Code style and structural rules to follow when touching `LocalMind`.
   `resources/data/…`).
 - The system prompt lives at `resources/SYSTEM_PROMPT.md`; path is wired via
   `SYSTEM_PROMPT_PATH` in `.env`.
+- Run the app/tests with the project venv interpreter — never bare `python` or
+  `py`. Windows: `.venv\Scripts\python.exe`; Unix/macOS: `.venv/bin/python`
+  (e.g. `.venv\Scripts\python.exe main.py cmd`, `.venv\Scripts\python.exe -m pytest`).

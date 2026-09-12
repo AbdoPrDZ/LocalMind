@@ -180,24 +180,26 @@ max_tokens, stream)` API (dict result / iterator of dict chunks), so the agent
 is backend-agnostic.
 
 - `LocalLLMProvider` — wraps the `llama-cpp-python` `Llama` singleton
-  (`MODEL_CONTEXT_WINDOW`, `MODEL_CPU_THREADS`, `MODEL_GPU_LAYERS`,
-  `MODEL_VERBOSE`; location via `MODELS_DIR` + `MODEL_NAME` + `model.gguf`).
+  (`LLM_LOCAL_CONTEXT_WINDOW`, `LLM_LOCAL_CPU_THREADS`, `LLM_LOCAL_GPU_LAYERS`,
+  `LLM_LOCAL_VERBOSE`; location via `LLM_LOCAL_MODELS_DIR` +
+  `LLM_LOCAL_MODEL_NAME` + `model.gguf`).
   Sets `stream_marker = "response"` so the agent hides the Qwen3 thinking
   preamble while streaming.
 - `GeminiLLMProvider` — online via the `google-genai` SDK
-  (`GEMINI_API_KEY`, `GEMINI_MODEL`). Translates OpenAI-style messages/tool
-  schemas to Gemini contents/function declarations and normalizes responses
-  (text + function-call parts) back into OpenAI shape, including a `usage` key
-  (`prompt_tokens`/`completion_tokens`/`total_tokens`) from
-  `response.usage_metadata` on non-stream replies and a final `{"usage": ...}`
-  chunk on streams. Carries Gemini 3.x `thought_signature`/`id` through
-  tool-call round-trips; `stream_marker` is `None`, so text streams verbatim.
+  (`LLM_GEMINI_API_KEY`, `LLM_GEMINI_MODEL`). Translates OpenAI-style
+  messages/tool schemas to Gemini contents/function declarations and normalizes
+  responses (text + function-call parts) back into OpenAI shape, including a
+  `usage` key (`prompt_tokens`/`completion_tokens`/`total_tokens`) from
+  `response.usage_metadata` on non-stream replies and a final
+  `{"usage": ...}` chunk on streams. Carries Gemini 3.x
+  `thought_signature`/`id` through tool-call round-trips; `stream_marker` is
+  `None`, so text streams verbatim.
 - `OpenAILLMProvider` — one OpenAI-compatible HTTP backend (httpx) serving
-  BOTH free routers and Gemini (`OPENAI_MODEL`, default `openrouter/free`).
+  BOTH free routers and Gemini (`LLM_OPENAI_MODEL`, default `openrouter/free`).
   Model ids starting with `gemini-` resolve to Gemini's OpenAI-compatible
-  endpoint (`GEMINI_API_KEY`, `GEMINI_OPENAI_BASE_URL`); any other id routes to
-  the free backend (`OPENAI_API_KEY`/`OPENROUTER_API_KEY`, `OPENAI_BASE_URL`,
-  default `https://openrouter.ai/api/v1`) — see
+  endpoint (`LLM_GEMINI_API_KEY`, `LLM_GEMINI_OPENAI_BASE_URL`); any other id
+  routes to the free backend (`LLM_OPENAI_API_KEY`/`LLM_OPENROUTER_API_KEY`,
+  `LLM_OPENAI_BASE_URL`, default `https://openrouter.ai/api/v1`) — see
   `resources/models/free_models.json` for ~140 cost-0 model ids grouped by
   router. Non-stream returns the server's OpenAI-shaped body verbatim;
   streaming parses SSE (`iter_stream_chunks`) and merges OpenRouter-style
@@ -208,12 +210,12 @@ is backend-agnostic.
   (`utils/providers/free.py`, `LLM_PROVIDER=free`): a hosted free model with no
   API key at all. Endpoint + model resolved from
   `resources/models/keyless_models.json` via `resolve_endpoint()`/`available_models()`
-  (`FREE_ENDPOINT`/`FREE_MODEL`, default `pollinations` / `openai-fast`;
-  `FREE_BASE_URL` overrides). Sends NO `Authorization` header; reuses the
+  (`LLM_FREE_ENDPOINT`/`LLM_FREE_MODEL`, default `pollinations` / `openai-fast`;
+  `LLM_FREE_BASE_URL` overrides). Sends NO `Authorization` header; reuses the
   `openai` provider's `_chat_url`/`iter_stream_chunks`/`_error_text` so SSE tool
   calls and error formatting are identical. `stream_marker` is `None`. Registered
   in the factory (`PROVIDERS["free"]`), wired into `/select model free <model>`,
-  `/settings`, and `services/settings.py` (`FREE_MODEL` env mapping).
+  `/settings`, and `services/settings.py` (`LLM_FREE_MODEL` env mapping).
   Experimental: free endpoints rate-limit and can inject promotional notices.
   A **notice-guard** (`_is_notice`/`_guarded` in `free.py`) detects injected
   promo/budget boilerplate (`_NOTICE_MARKERS` — e.g. Pollinations' "raise the
@@ -224,9 +226,9 @@ is backend-agnostic.
 
 Note that when `LLM_PROVIDER=gemini` (or `openai`/`free`), `ENV.init()` only
 requires `DATABASE_URL` (plus the provider's own settings) —
-`MODELS_DIR`/`MODEL_NAME` are optional. Stream-mode text/tool-call output is
-normalized per provider in `utils/agent.py` (marker-gated for Qwen3, verbatim
-for online providers).
+`LLM_LOCAL_MODELS_DIR`/`LLM_LOCAL_MODEL_NAME` are optional. Stream-mode
+text/tool-call output is normalized per provider in `utils/agent.py`
+(marker-gated for Qwen3, verbatim for online providers).
 
 ## Runtime settings (`services/settings.py`)
 
@@ -235,10 +237,10 @@ for online providers).
 - `SettingsService.get/set`, `set_provider`, `set_model`, `apply_to_env`.
 - `resolve_provider()` — settings override else `LLM_PROVIDER` (default
   `"local"`).
-- `resolve_model(provider)` — settings override else `GEMINI_MODEL` for gemini
-  (default `DEFAULT_GEMINI_MODEL`), `OPENAI_MODEL` for openai (default
-  `openrouter/free`), `FREE_MODEL` for free (default `DEFAULT_FREE_MODEL`),
-  or `MODEL_NAME` for local.
+- `resolve_model(provider)` — settings override else `LLM_GEMINI_MODEL` for
+  gemini (default `DEFAULT_GEMINI_MODEL`), `LLM_OPENAI_MODEL` for openai
+  (default `openrouter/free`), `LLM_FREE_MODEL` for free (default
+  `DEFAULT_FREE_MODEL`), or `LLM_LOCAL_MODEL_NAME` for local.
   Model env var mapping lives in `_model_env(provider)`.
 - `Chat.create()`/`Chat.load()` open usage sessions with the resolved
   provider/model; the cmd app validates and persists a new choice via

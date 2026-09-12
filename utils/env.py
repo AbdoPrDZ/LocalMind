@@ -10,8 +10,8 @@ REQUIRED_ENV_VARS = [
 
 # Only required when running the local llama-cpp backend.
 LOCAL_REQUIRED_ENV_VARS = [
-  "MODELS_DIR",
-  "MODEL_NAME",
+  "LLM_LOCAL_MODELS_DIR",
+  "LLM_LOCAL_MODEL_NAME",
 ]
 
 # .env sits next to modren-app/ (independent of the current working dir).
@@ -53,11 +53,11 @@ class ENV:
 
   @staticmethod
   def get_gemini_api_key() -> str:
-    value = ENV.get("GEMINI_API_KEY")
+    value = ENV.get("LLM_GEMINI_API_KEY")
 
     if not value:
       raise ValueError(
-        "GEMINI_API_KEY is required when LLM_PROVIDER=gemini (or when using "
+        "LLM_GEMINI_API_KEY is required when LLM_PROVIDER=gemini (or when using "
         "a gemini-* model through LLM_PROVIDER=openai). "
         "Get one at https://aistudio.google.com/apikey."
       )
@@ -66,15 +66,15 @@ class ENV:
 
   @staticmethod
   def get_openai_base_url() -> str:
-    return ENV.get("OPENAI_BASE_URL", default=DEFAULT_OPENAI_BASE_URL)
+    return ENV.get("LLM_OPENAI_BASE_URL", default=DEFAULT_OPENAI_BASE_URL)
 
   @staticmethod
   def get_openai_api_key() -> str:
-    return ENV.get("OPENAI_API_KEY") or ENV.get("OPENROUTER_API_KEY")
+    return ENV.get("LLM_OPENAI_API_KEY") or ENV.get("LLM_OPENROUTER_API_KEY")
 
   @staticmethod
   def get_openai_model() -> str:
-    return ENV.get("OPENAI_MODEL", default=DEFAULT_OPENAI_MODEL) or DEFAULT_OPENAI_MODEL
+    return ENV.get("LLM_OPENAI_MODEL", default=DEFAULT_OPENAI_MODEL) or DEFAULT_OPENAI_MODEL
 
   @staticmethod
   def get_database_url() -> str:
@@ -82,7 +82,7 @@ class ENV:
 
   @staticmethod
   def get_models_dir() -> str:
-    path = ENV.get("MODELS_DIR", required=True)
+    path = ENV.get("LLM_LOCAL_MODELS_DIR", required=True)
 
     if not os.path.exists(path):
       raise ValueError(f"Models directory {path} does not exist.")
@@ -91,7 +91,7 @@ class ENV:
 
   @staticmethod
   def get_model_path() -> str:
-    name =  ENV.get("MODEL_NAME", required=True)
+    name =  ENV.get("LLM_LOCAL_MODEL_NAME", required=True)
     path = os.path.join(ENV.get_models_dir(), name, "model.gguf")
 
     if not os.path.exists(path):

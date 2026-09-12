@@ -55,9 +55,16 @@ Code changes:
 
 Commands:
 
-- Run from the project root: `python main.py [app] [args...]`
-  (e.g. `python main.py cmd "list projects"`, or `python main.py cmd` for the
-  interactive questionary session).
+- **Always use the project virtualenv interpreter** — never bare `python` or
+  `py` (bare `python` hits the Microsoft Store stub; `py` selects a bare
+  interpreter without the project deps). Windows:
+  `.venv\Scripts\python.exe`. Unix/macOS: `.venv/bin/python`.
+- Run from the project root: `.venv\Scripts\python.exe main.py [app] [args...]`
+  (e.g. `.venv\Scripts\python.exe main.py cmd "list projects"`, or
+  `.venv\Scripts\python.exe main.py cmd` for the interactive questionary
+  session). For tests: `.venv\Scripts\python.exe -m pytest`.
+- Verify without running the app:
+  `.venv\Scripts\python.exe -c "..."`.
 
 ## Quick facts
 
@@ -72,4 +79,5 @@ Commands:
   A small bounded global-context snapshot is auto-injected into the prompt.
 - `projects`/`tasks` models are example scaffolding, not the product goal.
   `Chat`/`Message` models are the conversation store.
-- Run commands from the project root (`python main.py [app] [args...]`).
+- Run commands from the project root with the venv interpreter
+  (`.venv\Scripts\python.exe main.py [app] [args...]`).

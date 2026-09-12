@@ -54,12 +54,12 @@ def test_provider_needs_no_api_key(monkeypatch):
 
 
 def test_provider_model_from_env(monkeypatch):
-  monkeypatch.setenv("FREE_MODEL", "qwen-coder")
+  monkeypatch.setenv("LLM_FREE_MODEL", "qwen-coder")
   assert FreeLLMProvider().model == "qwen-coder"
 
 
 def test_provider_base_url_override(monkeypatch):
-  monkeypatch.setenv("FREE_BASE_URL", "https://example.com/v1/")
+  monkeypatch.setenv("LLM_FREE_BASE_URL", "https://example.com/v1/")
   provider = FreeLLMProvider()
   assert provider.base_url == "https://example.com/v1"
 
@@ -111,7 +111,7 @@ def test_registry_is_valid_json():
 def test_settings_resolve_model_free(monkeypatch):
   from services.settings import resolve_model
 
-  monkeypatch.delenv("FREE_MODEL", raising=False)
+  monkeypatch.delenv("LLM_FREE_MODEL", raising=False)
   assert resolve_model("free") == DEFAULT_FREE_MODEL
 
 

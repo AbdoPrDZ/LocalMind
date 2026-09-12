@@ -63,8 +63,8 @@ def test_settings_persist_across_separate_reads(db):
 
 def test_resolve_defaults_without_settings(db, monkeypatch):
   monkeypatch.delenv("LLM_PROVIDER", raising=False)
-  monkeypatch.delenv("GEMINI_MODEL", raising=False)
-  monkeypatch.setenv("MODEL_NAME", "qwen3-4b-instruct-gguf")
+  monkeypatch.delenv("LLM_GEMINI_MODEL", raising=False)
+  monkeypatch.setenv("LLM_LOCAL_MODEL_NAME", "qwen3-4b-instruct-gguf")
 
   assert resolve_provider() == "local"
   assert resolve_model("local") == "qwen3-4b-instruct-gguf"
@@ -75,8 +75,8 @@ def test_resolve_defaults_without_settings(db, monkeypatch):
 
 def test_resolve_uses_settings_override(db, monkeypatch):
   monkeypatch.setenv("LLM_PROVIDER", "local")
-  monkeypatch.setenv("GEMINI_MODEL", "gemini-dflt")
-  monkeypatch.setenv("MODEL_NAME", "qwen-dflt")
+  monkeypatch.setenv("LLM_GEMINI_MODEL", "gemini-dflt")
+  monkeypatch.setenv("LLM_LOCAL_MODEL_NAME", "qwen-dflt")
 
   SettingsService.set_provider("gemini")
   SettingsService.set_model("gemini", "gemini-3.5-flash")
@@ -89,13 +89,13 @@ def test_resolve_uses_settings_override(db, monkeypatch):
 
 def test_apply_to_env(db, monkeypatch):
   monkeypatch.delenv("LLM_PROVIDER", raising=False)
-  monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+  monkeypatch.setenv("LLM_GEMINI_API_KEY", "test-key")
   SettingsService.set_provider("gemini")
   SettingsService.set_model("gemini", "gemini-3.5-flash")
 
   SettingsService.apply_to_env()
   assert os.environ["LLM_PROVIDER"] == "gemini"
-  assert os.environ["GEMINI_MODEL"] == "gemini-3.5-flash"
+  assert os.environ["LLM_GEMINI_MODEL"] == "gemini-3.5-flash"
 
   reset_llm()
   provider = get_llm().__class__.__name__
@@ -118,9 +118,9 @@ def test_select_model_unknown_provider(db):
 def test_select_model_gemini_missing_key(db, monkeypatch):
   from apps.cmd.main import _select_model
 
-  monkeypatch.setenv("GEMINI_API_KEY", "")
+  monkeypatch.setenv("LLM_GEMINI_API_KEY", "")
   error = _select_model("gemini", "gemini-3.5-flash")
-  assert "GEMINI_API_KEY" in error
+  assert "LLM_GEMINI_API_KEY" in error
   assert SettingsService.get_provider() is None
 
 

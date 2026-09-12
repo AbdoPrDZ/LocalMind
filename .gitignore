@@ -12,6 +12,7 @@ __pycache__/
 resources/models/*
 !resources/models/registry.json
 !resources/models/free_models.json
+!resources/models/keyless_models.json
 resources/data/
 
 # OS

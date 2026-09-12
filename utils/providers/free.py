@@ -2,8 +2,8 @@
 
 ``LLM_PROVIDER=free`` means "hosted free LLM without asking the LocalMind user
 for an API key". The endpoint and model come from the keyless registry
-(``resources/models/keyless_models.json``), selected by ``FREE_ENDPOINT`` and
-``FREE_MODEL`` (or overridden entirely with ``FREE_BASE_URL``).
+(``resources/models/keyless_models.json``), selected by ``LLM_FREE_ENDPOINT``
+and ``LLM_FREE_MODEL`` (or overridden entirely with ``LLM_FREE_BASE_URL``).
 
 It is a thin keyless HTTP client that reuses the ``openai`` provider's URL
 joining, SSE parsing and error formatting, so the Agent/tool loop is
@@ -60,8 +60,8 @@ def _notice_error(base_url: str) -> str:
     f"The keyless free endpoint ('{base_url}') answered with an injected "
     "advertisement/budget notice instead of a real response — the anonymous "
     "tier looks exhausted. LocalMind retried once instructing it not to "
-    "advertise, and it still did. Wait a bit, pick a different FREE_MODEL or "
-    "FREE_ENDPOINT, or switch LLM_PROVIDER (e.g. 'local' or 'openai')."
+    "advertise, and it still did. Wait a bit, pick a different LLM_FREE_MODEL or "
+    "LLM_FREE_ENDPOINT, or switch LLM_PROVIDER (e.g. 'local' or 'openai')."
   )
 
 
@@ -72,11 +72,11 @@ def _registry() -> dict:
 
 
 def resolve_endpoint(name: Optional[str] = None) -> dict:
-  """Resolve a keyless endpoint by name (``FREE_ENDPOINT``/default fallback)."""
+  """Resolve a keyless endpoint by name (``LLM_FREE_ENDPOINT``/default fallback)."""
   endpoints = _registry()
   key = (
     (name or "").strip().lower()
-    or (ENV.get("FREE_ENDPOINT") or DEFAULT_FREE_ENDPOINT).strip().lower()
+    or (ENV.get("LLM_FREE_ENDPOINT") or DEFAULT_FREE_ENDPOINT).strip().lower()
   )
   endpoint = endpoints.get(key)
   if endpoint is None:
@@ -103,9 +103,9 @@ class FreeLLMProvider(LLMProvider):
   stream_marker = None
 
   def __init__(self) -> None:
-    self.model = (ENV.get("FREE_MODEL") or DEFAULT_FREE_MODEL).strip()
+    self.model = (ENV.get("LLM_FREE_MODEL") or DEFAULT_FREE_MODEL).strip()
     self.base_url = (
-      ENV.get("FREE_BASE_URL") or resolve_endpoint(ENV.get("FREE_ENDPOINT"))["base_url"]
+      ENV.get("LLM_FREE_BASE_URL") or resolve_endpoint(ENV.get("LLM_FREE_ENDPOINT"))["base_url"]
     ).rstrip("/")
 
     import httpx

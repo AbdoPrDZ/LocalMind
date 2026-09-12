@@ -89,9 +89,9 @@ plus global summary first, then closes. Full history is available via
   session), `/select model <provider> <name>` persist a provider/model switch,
   `/settings` show the active selection, `/tools` list tools.
 - `/select model` validates provider (must be in `utils.providers.PROVIDERS`),
-  checks `GEMINI_API_KEY` for gemini models (billed via the gemini or openai
+  checks `LLM_GEMINI_API_KEY` for gemini models (billed via the gemini or openai
   provider) and an installed `model.gguf` for local, confirms a router
-  `OPENAI_API_KEY`/`OPENROUTER_API_KEY` for non-gemini openai models,
+  `LLM_OPENAI_API_KEY`/`LLM_OPENROUTER_API_KEY` for non-gemini openai models,
   persists the choice via `SettingsService` (settings table), calls
   `reset_llm()`, and reopens the chat's usage session
   (`Chat.reopen_usage`) so accounting matches the new provider/model. The

@@ -1,0 +1,18 @@
+{
+  "_note": "Keyless hosted LLM endpoints for LLM_PROVIDER=free. These services permit truly anonymous, no-API-key access — so LocalMind never asks the user for a key. Pick one with LLM_FREE_ENDPOINT, a model with LLM_FREE_MODEL (override the whole endpoint with LLM_FREE_BASE_URL when you know a compatible one). There is no fallback or auto-switching: LocalMind calls exactly the endpoint the user chose. Free endpoints change policies and can be rate-limited; treat them as experimental.",
+  "endpoints": {
+    "pollinations": {
+      "name": "Pollinations.ai anonymous tier",
+      "base_url": "https://text.pollinations.ai/openai",
+      "requires_api_key": false,
+      "models": {
+        "openai-fast": {
+          "name": "GPT-OSS 20B (OVH, reasoning)",
+          "tool_call": true,
+          "reasoning": true,
+          "tier": "anonymous"
+        }
+      }
+    }
+  }
+}

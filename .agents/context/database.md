@@ -90,15 +90,16 @@ via `@register_model`, so the LLM can neither see nor touch it.
 `Setting` (table `settings`) is a simple key→value store, also **not**
 registered via `@register_model`. It persists the user's runtime LLM
 selection (keys `provider`, `<provider>_model`); the `.env` values
-(`LLM_PROVIDER`, `GEMINI_MODEL`, `MODEL_NAME`) remain the fallback defaults.
+(`LLM_PROVIDER`, `LLM_GEMINI_MODEL`, `LLM_LOCAL_MODEL_NAME`) remain the
+fallback defaults.
 
 - Written only through `SettingsService` (`services/settings.py`): `get`/
   `set`, `set_provider`, `set_model`, `apply_to_env` (pushes overrides into
   `os.environ` before a provider is built). `get` tolerates a missing table
   (returns the default) so it is safe before `init_db()`.
 - Resolution helpers: `resolve_provider()` (setting else `LLM_PROVIDER` or
-  `"local"`) and `resolve_model(provider)` (setting else `GEMINI_MODEL`/
-  `OPENAI_MODEL`/`MODEL_NAME`/`unknown`; env var per provider via
+  `"local"`) and `resolve_model(provider)` (setting else `LLM_GEMINI_MODEL`/
+  `LLM_OPENAI_MODEL`/`LLM_LOCAL_MODEL_NAME`/`unknown`; env var per provider via
   `_model_env()`). Used by usage accounting, `get_llm()` and the cmd
   app's `/settings` display.
 - `utils/llm.py::reset_llm()` drops the cached provider singleton so the next

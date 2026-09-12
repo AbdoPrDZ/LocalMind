@@ -5,7 +5,7 @@ import pytest
 from pydantic import BaseModel
 
 os.environ["LLM_PROVIDER"] = "gemini"
-os.environ["GEMINI_API_KEY"] = "test-key"
+os.environ["LLM_GEMINI_API_KEY"] = "test-key"
 
 from utils.providers.gemini import (  # noqa: E402
   GeminiLLMProvider,

@@ -1,8 +1,8 @@
 """Runtime LLM selection persisted in the ``settings`` table.
 
-``.env`` provides the defaults (``LLM_PROVIDER``, ``GEMINI_MODEL``,
-``MODEL_NAME``); the ``settings`` table stores the runtime override the user
-picks with the cmd app's ``/select model`` command. Overrides are applied to
+``.env`` provides the defaults (``LLM_PROVIDER``, ``LLM_GEMINI_MODEL``,
+``LLM_LOCAL_MODEL_NAME``); the ``settings`` table stores the runtime override
+the user picks with the cmd app's ``/select model`` command. Overrides are applied to
 the environment before a provider is built (``apply_to_env``) and read for
 usage accounting via ``resolve_provider()`` / ``resolve_model()``.
 """
@@ -27,12 +27,12 @@ def _provider_model_key(provider: str) -> str:
 def _model_env(provider: str) -> str:
   """Env var that feeds the model default for a provider."""
   if provider == "gemini":
-    return "GEMINI_MODEL"
+    return "LLM_GEMINI_MODEL"
   if provider == "openai":
-    return "OPENAI_MODEL"
+    return "LLM_OPENAI_MODEL"
   if provider == "free":
-    return "FREE_MODEL"
-  return "MODEL_NAME"
+    return "LLM_FREE_MODEL"
+  return "LLM_LOCAL_MODEL_NAME"
 
 
 class SettingsService:
@@ -113,11 +113,11 @@ def resolve_model(provider: str) -> str:
   if stored:
     return stored
   if provider == "gemini":
-    return ENV.get("GEMINI_MODEL", default=DEFAULT_GEMINI_MODEL)
+    return ENV.get("LLM_GEMINI_MODEL", default=DEFAULT_GEMINI_MODEL)
   if provider == "openai":
-    return ENV.get("OPENAI_MODEL", default=DEFAULT_OPENAI_MODEL)
+    return ENV.get("LLM_OPENAI_MODEL", default=DEFAULT_OPENAI_MODEL)
   if provider == "free":
     from utils.providers.free import DEFAULT_FREE_MODEL
 
-    return ENV.get("FREE_MODEL", default=DEFAULT_FREE_MODEL)
-  return ENV.get("MODEL_NAME", default="unknown")
+    return ENV.get("LLM_FREE_MODEL", default=DEFAULT_FREE_MODEL)
+  return ENV.get("LLM_LOCAL_MODEL_NAME", default="unknown")

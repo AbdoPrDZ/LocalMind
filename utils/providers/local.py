@@ -14,10 +14,10 @@ class LocalLLMProvider(LLMProvider):
 
     self._llm = Llama(
       model_path=ENV.get_model_path(),
-      n_ctx=int(ENV.get("MODEL_CONTEXT_WINDOW", default=4096)),
-      n_threads=int(ENV.get("MODEL_CPU_THREADS", default=8)),
-      n_gpu_layers=int(ENV.get("MODEL_GPU_LAYERS", default=0)),
-      verbose=ENV.get("MODEL_VERBOSE", default="false").lower()
+      n_ctx=int(ENV.get("LLM_LOCAL_CONTEXT_WINDOW", default=4096)),
+      n_threads=int(ENV.get("LLM_LOCAL_CPU_THREADS", default=8)),
+      n_gpu_layers=int(ENV.get("LLM_LOCAL_GPU_LAYERS", default=0)),
+      verbose=ENV.get("LLM_LOCAL_VERBOSE", default="false").lower()
       in {"1", "true", "yes"},
     )
 

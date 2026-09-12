@@ -12,12 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - OpenAI-compatible `openai` LLM provider (`utils/providers/openai.py`): one
   backend that serves both free online models and Gemini. Model ids starting
   with `gemini-` call Gemini's OpenAI-compatible endpoint
-  (`GEMINI_API_KEY`, `GEMINI_OPENAI_BASE_URL`); everything else routes to the
-  free router configured by `OPENAI_BASE_URL` (default OpenRouter) using
-  `OPENAI_API_KEY`/`OPENROUTER_API_KEY`. It speaks OpenAI chat completions over
-  httpx in both non-streaming and SSE streaming form, merges OpenRouter-style
-  fragmented streaming `tool_calls` back into complete calls, and is driven by
-  `OPENAI_MODEL` (default `openrouter/free`).
+  (`LLM_GEMINI_API_KEY`, `LLM_GEMINI_OPENAI_BASE_URL`); everything else routes
+  to the free router configured by `LLM_OPENAI_BASE_URL` (default OpenRouter)
+  using `LLM_OPENAI_API_KEY`/`LLM_OPENROUTER_API_KEY`. It speaks OpenAI chat
+  completions over httpx in both non-streaming and SSE streaming form, merges
+  OpenRouter-style fragmented streaming `tool_calls` back into complete calls,
+  and is driven by `LLM_OPENAI_MODEL` (default `openrouter/free`).
 - Free model catalog at `resources/models/free_models.json`: ~140 cost-0 model
   ids copied from opencode's own model registry, grouped by router (bothub,
   openrouter, kilo, unorouter, orcarouter, tokenrouter, zenmux, kenari,
@@ -84,7 +84,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     Pollinations tier — it currently injects this on every reply). The provider
     detects that boilerplate, retries once with a "don't advertise" nudge, and
     if the endpoint still advertises, raises a clear error pointing at
-    `FREE_MODEL`/`FREE_ENDPOINT`/`LLM_PROVIDER` — a polluted reply is never
+    `LLM_FREE_MODEL`/`LLM_FREE_ENDPOINT`/`LLM_PROVIDER` — a polluted reply is never
     shown to the user. Verified live: `keylessai.thryx.workers.dev` is DNS-dead
     and `api.airforce` now requires a paid balance/Authorization, so
     Pollinations' anonymous tier is the only live keyless endpoint left and the
@@ -122,6 +122,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- LLM backend env vars are now namespaced by provider in `.env` (old names
+  are dropped; update your `.env` accordingly):
+  - local: `LLM_LOCAL_MODELS_DIR`, `LLM_LOCAL_MODEL_NAME`,
+    `LLM_LOCAL_CONTEXT_WINDOW`, `LLM_LOCAL_CPU_THREADS`,
+    `LLM_LOCAL_GPU_LAYERS`, `LLM_LOCAL_VERBOSE`
+    (renamed from `MODELS_DIR`, `MODEL_NAME`, `MODEL_CONTEXT_WINDOW`,
+    `MODEL_CPU_THREADS`, `MODEL_GPU_LAYERS`, `MODEL_VERBOSE`);
+  - gemini: `LLM_GEMINI_API_KEY`, `LLM_GEMINI_MODEL`,
+    `LLM_GEMINI_OPENAI_BASE_URL` (renamed from `GEMINI_API_KEY`,
+    `GEMINI_MODEL`, `GEMINI_OPENAI_BASE_URL`);
+  - openai: `LLM_OPENAI_API_KEY`, `LLM_OPENROUTER_API_KEY`,
+    `LLM_OPENAI_BASE_URL`, `LLM_OPENAI_MODEL`, `LLM_OPENAI_REFERER`,
+    `LLM_OPENAI_TITLE` (renamed from `OPENAI_API_KEY`,
+    `OPENROUTER_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`,
+    `OPENAI_REFERER`, `OPENAI_TITLE`);
+  - free: `LLM_FREE_ENDPOINT`, `LLM_FREE_MODEL`, `LLM_FREE_BASE_URL`
+    (renamed from `FREE_ENDPOINT`, `FREE_MODEL`, `FREE_BASE_URL`).
+  `LLM_PROVIDER`, `DATABASE_URL`, `SYSTEM_PROMPT_PATH`, `ALLOWED_PLACES`,
+  `ENABLE_SHELL_TOOLS`, `WEB_SEARCH_PROVIDER`, and `AUTO_MEMORIZE` are
+  unchanged.
 - The model is now told (in `resources/SYSTEM_PROMPT.md` and the chat-context
   instructions in `apps/base.py`) that chat-context updates and memory saves
   are **silent internal bookkeeping**: it must never announce them to the user,
@@ -167,7 +187,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   layer in `utils/providers/` (`LLMProvider` contract, `LocalLLMProvider`,
   `GeminiLLMProvider`) exposing an OpenAI-style chat-completion API, so the
   agent's tool-calling loop works unchanged with either backend. Gemini
-  settings: `GEMINI_API_KEY`, `GEMINI_MODEL`; `MODELS_DIR`/`MODEL_NAME` are no
+  settings: `LLM_GEMINI_API_KEY`, `LLM_GEMINI_MODEL`;
+  `LLM_LOCAL_MODELS_DIR`/`LLM_LOCAL_MODEL_NAME` are no
   longer required when using an online provider. Gemini 3.x `thought_signature`
   round-trips are preserved across tool calls (`utils/providers/gemini.py`),
   and tool results now carry `name`/`tool_call_id` for remote providers.

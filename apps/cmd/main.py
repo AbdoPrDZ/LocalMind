@@ -123,16 +123,16 @@ def _print_settings() -> None:
       ENV.get_gemini_api_key()
       print("API key  : set")
     except ValueError:
-      print("API key  : NOT SET — set GEMINI_API_KEY in .env before using Gemini")
+      print("API key  : NOT SET — set LLM_GEMINI_API_KEY in .env before using Gemini")
   elif provider == "openai":
     if model.strip().lower().startswith("gemini"):
       try:
         ENV.get_gemini_api_key()
-        print("API key  : set (Gemini — GEMINI_API_KEY)")
+        print("API key  : set (Gemini — LLM_GEMINI_API_KEY)")
       except ValueError:
-        print("API key  : NOT SET — set GEMINI_API_KEY in .env before using Gemini models")
+        print("API key  : NOT SET — set LLM_GEMINI_API_KEY in .env before using Gemini models")
     else:
-      print("API key  : " + ("set (free router)" if (ENV.get("OPENAI_API_KEY") or ENV.get("OPENROUTER_API_KEY")) else "NOT SET — set OPENAI_API_KEY or OPENROUTER_API_KEY in .env"))
+      print("API key  : " + ("set (free router)" if (ENV.get("LLM_OPENAI_API_KEY") or ENV.get("LLM_OPENROUTER_API_KEY")) else "NOT SET — set LLM_OPENAI_API_KEY or LLM_OPENROUTER_API_KEY in .env"))
   elif provider == "free":
     print("API key  : not required (keyless endpoint)")
   if stored_provider:
@@ -161,13 +161,13 @@ def _select_model(provider: str, model: str) -> str | None:
       except ValueError as exc:
         return str(exc)
     else:
-      api_key = ENV.get("OPENAI_API_KEY") or ENV.get("OPENROUTER_API_KEY")
+      api_key = ENV.get("LLM_OPENAI_API_KEY") or ENV.get("LLM_OPENROUTER_API_KEY")
       if not api_key:
-        return "Set OPENAI_API_KEY (or OPENROUTER_API_KEY) in .env before using free models via LLM_PROVIDER=openai."
+        return "Set LLM_OPENAI_API_KEY (or LLM_OPENROUTER_API_KEY) in .env before using free models via LLM_PROVIDER=openai."
   elif provider == "free":
     from utils.providers.free import available_models
 
-    if model.strip().lower() not in available_models() and not ENV.get("FREE_BASE_URL"):
+    if model.strip().lower() not in available_models() and not ENV.get("LLM_FREE_BASE_URL"):
       return f"Model '{model}' is not a keyless model of this endpoint. Available: {', '.join(available_models())}."
   else:
     try:

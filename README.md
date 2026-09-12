@@ -122,11 +122,11 @@ Database and model paths are configured in `.env` at the project root:
 
 ```dotenv
 DATABASE_URL=sqlite:///./resources/data/app.db
-MODELS_DIR=./resources/models
-MODEL_NAME=qwen3-4b-instruct-gguf
-MODEL_CONTEXT_WINDOW=4096
-MODEL_CPU_THREADS=8
-MODEL_GPU_LAYERS=0
+LLM_LOCAL_MODELS_DIR=./resources/models
+LLM_LOCAL_MODEL_NAME=qwen3-4b-instruct-gguf
+LLM_LOCAL_CONTEXT_WINDOW=4096
+LLM_LOCAL_CPU_THREADS=8
+LLM_LOCAL_GPU_LAYERS=0
 ```
 
 ## LLM backends
@@ -134,45 +134,45 @@ MODEL_GPU_LAYERS=0
 The backend is switched with `LLM_PROVIDER` in `.env`:
 
 - **`local`** (default) — runs the GGUF model offline via `llama-cpp-python`
-  (`MODELS_DIR`/`MODEL_NAME` must point at a downloaded model).
+  (`LLM_LOCAL_MODELS_DIR`/`LLM_LOCAL_MODEL_NAME` must point at a downloaded model).
 - **`gemini`** — talks to Google's Gemini API over the network
   (`google-genai`). Only `DATABASE_URL` plus the Gemini settings are used;
-  `MODELS_DIR`/`MODEL_NAME` are not required.
+  `LLM_LOCAL_MODELS_DIR`/`LLM_LOCAL_MODEL_NAME` are not required.
 - **`openai`** — one OpenAI-compatible backend for free routers *and* Gemini.
   Models starting with `gemini-` use Gemini's OpenAI-compatible endpoint
-  (`GEMINI_API_KEY`, `GEMINI_OPENAI_BASE_URL`); every other model routes to the
-  free backend (`OPENAI_API_KEY`/`OPENROUTER_API_KEY`, `OPENAI_BASE_URL`,
-  default `https://openrouter.ai/api/v1`). See
+  (`LLM_GEMINI_API_KEY`, `LLM_GEMINI_OPENAI_BASE_URL`); every other model
+  routes to the free backend (`LLM_OPENAI_API_KEY`/`LLM_OPENROUTER_API_KEY`,
+  `LLM_OPENAI_BASE_URL`, default `https://openrouter.ai/api/v1`). See
   `resources/models/free_models.json` for ~140 free model ids.
 - **`free`** — a hosted free LLM with **no API key at all**. The endpoint and
   model come from `resources/models/keyless_models.json` (default: Pollinations
-  anonymous tier, `openai-fast`). `FREE_ENDPOINT`/`FREE_MODEL` select them;
-  `FREE_BASE_URL` overrides the endpoint. No fallback and no switching — you
-  pick it, LocalMind talks to exactly that endpoint. Experimental: keyless
-  tiers can be rate-limited or answer with injected promo/budget notices.
-  A built-in notice-guard detects those ads, retries once (nudging the model
-  not to advertise), and raises a clear error instead of showing you the ad —
-  a reply is never surfaced polluted.
+  anonymous tier, `openai-fast`). `LLM_FREE_ENDPOINT`/`LLM_FREE_MODEL` select
+  them; `LLM_FREE_BASE_URL` overrides the endpoint. No fallback and no
+  switching — you pick it, LocalMind talks to exactly that endpoint.
+  Experimental: keyless tiers can be rate-limited or answer with injected
+  promo/budget notices. A built-in notice-guard detects those ads, retries once
+  (nudging the model not to advertise), and raises a clear error instead of
+  showing you the ad — a reply is never surfaced polluted.
 
 ```dotenv
 LLM_PROVIDER=gemini
-GEMINI_API_KEY=your-api-key          # https://aistudio.google.com/apikey
-GEMINI_MODEL=gemini-3.5-flash        # default if omitted
+LLM_GEMINI_API_KEY=your-api-key          # https://aistudio.google.com/apikey
+LLM_GEMINI_MODEL=gemini-3.5-flash        # default if omitted
 ```
 
 ```dotenv
 LLM_PROVIDER=openai
-OPENAI_API_KEY=your-key              # or OPENROUTER_API_KEY
-OPENAI_MODEL=openrouter/free         # default if omitted; see resources/models/free_models.json
-OPENAI_BASE_URL=https://openrouter.ai/api/v1
-GEMINI_API_KEY=your-key              # only if you use gemini-* models through this provider
+LLM_OPENAI_API_KEY=your-key              # or LLM_OPENROUTER_API_KEY
+LLM_OPENAI_MODEL=openrouter/free         # default if omitted; see resources/models/free_models.json
+LLM_OPENAI_BASE_URL=https://openrouter.ai/api/v1
+LLM_GEMINI_API_KEY=your-key              # only if you use gemini-* models through this provider
 ```
 
 ```dotenv
 LLM_PROVIDER=free
-FREE_ENDPOINT=pollinations           # keyless endpoint in resources/models/keyless_models.json
-FREE_MODEL=openai-fast               # model at that endpoint (default if omitted)
-# FREE_BASE_URL=https://...          # optional override; no API key is ever required
+LLM_FREE_ENDPOINT=pollinations           # keyless endpoint in resources/models/keyless_models.json
+LLM_FREE_MODEL=openai-fast               # model at that endpoint (default if omitted)
+# LLM_FREE_BASE_URL=https://...         # optional override; no API key is ever required
 ```
 
 Providers live in `utils/providers/` and all speak the same OpenAI-style
@@ -238,11 +238,11 @@ the choice in the `settings` table — the `.env` values stay as defaults:
 ```
 
 The provider must be one of `PROVIDERS` (`local`, `gemini`, `openai`); a gemini
-selection requires `GEMINI_API_KEY` in `.env`, and a local selection requires
+selection requires `LLM_GEMINI_API_KEY` in `.env`, and a local selection requires
 the model to be installed (`scripts/install_model.py <name>`). The `openai`
 provider serves both free routers and Gemini through one OpenAI-compatible
 interface: any model starting with `gemini-` goes to Gemini, anything else
-routes to the free backend (`OPENAI_BASE_URL`, default OpenRouter). See
+routes to the free backend (`LLM_OPENAI_BASE_URL`, default OpenRouter). See
 `resources/models/free_models.json` for ~140 free model ids and the router API
 key/base url each needs. The active provider/model is
 written into the environment before the LLM provider is (re)built, and usage

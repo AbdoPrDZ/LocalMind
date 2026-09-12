@@ -2,8 +2,8 @@ import os
 import tempfile
 
 os.environ["DATABASE_URL"] = f"sqlite:///{os.path.join(tempfile.gettempdir(), 'localmind_test.db')}"
-os.environ["MODELS_DIR"] = os.path.join(os.getcwd(), "resources", "models")
-os.environ["MODEL_NAME"] = "qwen3-4b-instruct-gguf"
+os.environ["LLM_LOCAL_MODELS_DIR"] = os.path.join(os.getcwd(), "resources", "models")
+os.environ["LLM_LOCAL_MODEL_NAME"] = "qwen3-4b-instruct-gguf"
 
 import pytest  # noqa: E402
 
