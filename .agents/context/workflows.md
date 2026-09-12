@@ -16,16 +16,26 @@ own argparse sees just its arguments.
 ## Chat pipeline
 
 1. Interface creates/loads a chat via `Chat.create()` / `Chat.load(id)`.
-2. `chat.send(text)` saves the user message, builds `[system(+context), user]`.
-3. `Agent.run(messages)` sends the system prompt + current chat context + the
-   new user message with tool schemas to the model (NOT the full history).
-4. Model may reply with tool calls (native or Qwen3 `<tool_call>` XML blocks).
+2. `chat.send(text)` saves the user message, builds
+   `[system (+global snapshot +context), user]`.
+3. `Agent.run(messages)` sends the system prompt + global-context snapshot +
+   current chat context + the new user message with tool schemas to the model
+   (NOT the full history).
+4. Model may reply with tool calls (native or Qwen3 `<tool_call>` XML blocks) —
+   CRUD tools (`create_*`, `list_*`, …) and memory tools
+   (`search_global_memory`, `save_memory`, `get_chat_context`,
+   `search_chat_history`, `get_memory`).
 5. Agent executes each call, appends a `tool` role message with JSON results.
 6. Loop until the model returns a plain-text answer; `clean_answer()` strips the
    `thinking` preamble.
 7. If the reply contains a `<context>...</context>` block, `_extract_context()`
    saves the new summary as the chat context and removes the tags; the cleaned
    assistant reply is saved and returned.
+
+Memory workflow: the global-context snapshot primes the model; when it needs
+more it calls `search_global_memory` → optionally `get_chat_context(source
+chat)` or `search_chat_history`; durable findings are stored via `save_memory`
+(duplicate-guarded, provenance `source_chat_id`).
 
 Streaming variant: `chat.send_stream(text)` calls `Agent.run_stream()`; the
 answer is yielded token-by-token (only text after the `response` marker for

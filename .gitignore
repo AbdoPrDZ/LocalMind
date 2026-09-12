@@ -9,7 +9,8 @@ __pycache__/
 !.env.example
 
 # Local data
-resources/models/
+resources/models/*
+!resources/models/registry.json
 resources/data/
 
 # OS

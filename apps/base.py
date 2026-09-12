@@ -28,6 +28,8 @@ from sqlalchemy import select  # noqa: E402
 from database import get_session, init_db  # noqa: E402
 from models.chat import Chat as ChatRecord  # noqa: E402
 from models.message import Message as MessageRecord  # noqa: E402
+from services.global_context import build_global_context  # noqa: E402
+from tools.memory import build_memory_tools  # noqa: E402
 from tools.model import build_crud_tools  # noqa: E402
 from utils.agent import Agent  # noqa: E402
 from utils.tool import Tool  # noqa: E402
@@ -144,7 +146,7 @@ def _build_agent(
   ENV.init()
   init_db()
   return Agent(
-    tools=build_crud_tools(),
+    tools=build_crud_tools() + build_memory_tools(),
     system_prompt=system_prompt or SYSTEM_PROMPT,
     max_tokens=max_tokens,
   )
@@ -252,9 +254,17 @@ class Chat:
     return self.record.context
 
   def _system_prompt(self) -> str:
-    """The base system prompt plus the context-description instructions."""
+    """The system prompt plus a global-memory snapshot and the chat-context instructions."""
+    sections = [self.agent.system_prompt]
+
+    global_context = build_global_context(current_chat_id=self.id)
+    if global_context:
+      sections.append(global_context.strip())
+
     bare = "no context yet" if not self.record.context else self.record.context
-    return self.agent.system_prompt + CONTEXT_INSTRUCTIONS.format(context=bare)
+    sections.append(CONTEXT_INSTRUCTIONS.format(context=bare).strip())
+
+    return "\n\n".join(sections)
 
   def _set_context(self, content: str) -> None:
     """Persist a new (size-limited) chat context summary for this chat."""

@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Global memory system: `Memory` model (`models/memory.py`, cross-chat
+  memories with type/importance/provenance), `MemoryService`
+  (`services/memory.py`), memory tools (`tools/memory.py`:
+  `search_global_memory`, `get_memory`, `get_chat_context`,
+  `search_chat_history`, `save_memory`), and a bounded global-context snapshot
+  (`services/global_context.py`) injected into the system prompt. Duplicate
+  guard via normalized-content matching.
+- Model installer script `scripts/install_model.py`: downloads GGUF models from
+  Hugging Face into `resources/models/<name>/model.gguf`, backed by the model
+  registry (`resources/models/registry.json`), with `--list` and `--all`
+  options.
+- Test suite with `pytest` (`tests/`): memory persistence, search/ranking,
+  duplicate guard, provenance, chat-context/history retrieval, bounded global
+  context, and tool argument validation.
 - `apps/cmd` interface: interactive `questionary` CLI and single-shot prompt mode.
 - `Chat` / `Message` ORM models and the `Chat` service in `apps/base.py`: a
   persisted conversation (user + assistant messages in SQLite) that

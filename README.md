@@ -28,6 +28,12 @@ database     (database.py)     SQLAlchemy + SQLite
 generation, not the product goal. `Chat` / `Message` models are the product's
 conversation store.
 
+The agent also carries **global memory** across conversations: memories
+(facts, preferences, decisions, topics) persist in the `Memory` table, a small
+bounded snapshot is injected into every prompt, and the model retrieves/extends
+it through `search_global_memory`, `get_memory`, `get_chat_context`,
+`search_chat_history`, and `save_memory`.
+
 ## Requirements
 
 - Python 3.11+
@@ -42,11 +48,15 @@ install.cmd
 This creates `.venv`, then installs `requirements.txt`
 (`llama-cpp-python`, `sqlalchemy`, `pydantic`, `python-dotenv`, `questionary`).
 
-Place the model under:
+Download the model:
 
-```text
-resources/models/qwen3-4b-instruct-gguf/model.gguf
+```cmd
+python scripts/install_model.py qwen3-4b-instruct-gguf
+python scripts/install_model.py --list        & rem list the registry
+python scripts/install_model.py --all         & rem install everything
 ```
+
+This saves the GGUF as `resources/models/qwen3-4b-instruct-gguf/model.gguf`.
 
 Database and model paths are configured in `.env` at the project root:
 

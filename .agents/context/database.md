@@ -45,3 +45,17 @@ extend the registry; the plumbing does not change.
 LLM can never tamper with its own history; only `Chat.send()` writes them. The
 `chats.context` column holds the running conversation summary used instead of
 the full history (see `api.md`).
+
+## Global memory (`models/memory.py`)
+
+`Memory` (table `memories`) persists cross-chat knowledge: `type`
+(fact/preference/decision/topic), `content`, `importance` (1–4, default 2), an
+optional `source_chat_id` FK to `chats.id` for provenance, and created/updated
+timestamps via `utils.time.utcnow`.
+
+- Deliberately **not** registered via `@register_model`, so no generic CRUD tools
+  are generated. The LLM reaches memories only through the memory tools
+  (`tools/memory.py`) → `MemoryService` (`services/memory.py`).
+- No Alembic/migration system exists: `init_db()` runs
+  `BaseModel.metadata.create_all(engine)`. Importing `models.memory` in
+  `database.py` is what registers the table.

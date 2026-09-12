@@ -18,6 +18,11 @@ Code style and structural rules to follow when touching `LocalMind`.
   import time (e.g. `database.py`). Both `apps/base.py` and root `main.py`
   import `ENV` first, call `init()`, then import the rest — keep this ordering.
 - Interfaces add the project root to `sys.path` at the top of their entry module.
+- Standalone dev/ops scripts live under `scripts/` (e.g. `scripts/install_model.py`
+  downloads GGUF models from Hugging Face into `resources/models/<name>/model.gguf`).
+- Domain-independent services live under `services/`
+  (e.g. `services/memory.py`, `services/global_context.py`). Keep them decoupled
+  from the Project/Task demo scaffolding.
 - Root `main.py` dispatches to interfaces via argparse positional `app`
   (`cmd` implemented; `web`/`api`/`desktop` raise `NotImplementedError`).
 - Tools are always generic — parameterized by model, never hardcoded.

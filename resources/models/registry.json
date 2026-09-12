@@ -1,0 +1,26 @@
+{
+  "qwen3-4b-instruct-gguf": {
+    "repo": "llmware/qwen3-4b-instruct-gguf",
+    "file": "Qwen3-4B-Q4_K_M.gguf",
+    "size": "2.5 GB",
+    "description": "Qwen3 4B Instruct GGUF (Q4_K_M)"
+  },
+  "qwen2.5-3b-instruct-gguf": {
+    "repo": "Qwen/Qwen2.5-3B-Instruct-GGUF",
+    "file": "qwen2.5-3b-instruct-q4_k_m.gguf",
+    "size": "2.1 GB",
+    "description": "Qwen2.5 3B Instruct GGUF (Q4_K_M)"
+  },
+  "qwen3-1.7b-instruct-gguf": {
+    "repo": "Qwen/Qwen3-1.7B-GGUF",
+    "file": "Qwen3-1.7B-Q8_0.gguf",
+    "size": "1.8 GB",
+    "description": "Qwen3 1.7B Instruct GGUF (Q8_0)"
+  },
+  "gemma-3-4b-it-gguf": {
+    "repo": "lmstudio-community/gemma-3-4b-it-GGUF",
+    "file": "gemma-3-4b-it-Q4_K_M.gguf",
+    "size": "2.5 GB",
+    "description": "Gemma 3 4B Instruct GGUF (Q4_K_M)"
+  }
+}

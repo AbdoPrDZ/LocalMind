@@ -63,7 +63,10 @@ Commands:
 - Project: `LocalMind` — local, offline LLM platform with multiple interfaces
   (`cmd` done; `web`/`api`/`desktop` planned).
 - One shared core, many front-ends: `apps/base.py` (`Chat` service) → `Agent` →
-  local model (`llama-cpp-python`, Qwen3-4B GGUF) → generic CRUD tools.
+  local model (`llama-cpp-python`, Qwen3-4B GGUF) → generic CRUD tools
+  (`tools/model.py`) and controlled global-memory tools (`tools/memory.py`;
+  `MemoryService` in `services/memory.py`, `Memory` table in `models/memory.py`).
+  A small bounded global-context snapshot is auto-injected into the prompt.
 - `projects`/`tasks` models are example scaffolding, not the product goal.
   `Chat`/`Message` models are the conversation store.
 - Run commands from the project root (`python main.py [app] [args...]`).

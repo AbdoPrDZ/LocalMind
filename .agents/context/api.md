@@ -42,6 +42,10 @@ very last part of every answer wrapped in `<context>...</context>`.
   (12 000) so it can never grow unbounded.
 - Failed/interrupted inference persists the user message but saves no assistant
   reply or context update.
+- `_system_prompt()` injects a **bounded global context** snapshot (see below)
+  between the base system prompt and the chat-context instructions, plus a
+  `CURRENT CHAT ID:` line so the LLM can populate `source_chat_id` on
+  `save_memory` calls.
 
 The modules `Chat`/`Message` ORM classes register **read-only** for the LLM
 (`create/update/delete` disabled) so only this service writes conversation data.
@@ -85,6 +89,27 @@ ABC for all tools. Each tool declares:
 (`MODEL_CONTEXT_WINDOW`, `MODEL_CPU_THREADS`, `MODEL_GPU_LAYERS`,
 `MODEL_VERBOSE`). Model location resolves via
 `MODELS_DIR` + `MODEL_NAME` + `model.gguf` (see `architecture.md`).
+
+## Global memory (`services/`, `tools/memory.py`)
+
+Cross-chat persistence as a second layer under the existing chat context:
+
+- `MemoryService` (`services/memory.py`) — `create` (with duplicate guard:
+  normalized-content match before insert), `get/update/delete`, `search` (LIKE
+  over content/type, ranked by importance), `list`, `get_chat_context(chat_id)`,
+  `search_chat_history(query, chat_id?, limit)`. No vector DB, no business-domain
+  coupling.
+- Memory tools (`tools/memory.py`) — `search_global_memory`, `get_memory`,
+  `get_chat_context`, `search_chat_history`, `save_memory`. Registered alongside
+  CRUD tools in `_build_agent()`. The LLM never touches the DB directly
+  (tool → `MemoryService` → SQLAlchemy only).
+- `services/global_context.py::build_global_context()` — builds a small
+  prompt-friendly snapshot (`GLOBAL_CONTEXT_MAX_CHARS` 4000,
+  `GLOBAL_CONTEXT_MAX_ENTRIES` 12): top-N most important memories grouped by type
+  (preferences/decisions/topics/facts), with an optional `CURRENT CHAT ID`
+  header. The full memory table is never injected into a prompt.
+- `models/memory.py` — the `Memory` ORM row; **not** in the CRUD registry
+  (see `database.md`).
 
 > Adding a new interface = build a thin front-end that calls
 > `Chat.create()` then `chat.send()`. Never bypass the Chat service.

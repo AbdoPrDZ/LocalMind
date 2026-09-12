@@ -33,6 +33,6 @@ def get_session():
 
 
 def init_db() -> None:
-  from models import chat, message, project, task  # noqa: F401  (register tables)
+  from models import chat, memory, message, project, task  # noqa: F401  (register tables)
 
   BaseModel.metadata.create_all(engine)

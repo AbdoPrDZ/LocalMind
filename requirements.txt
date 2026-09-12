@@ -1,6 +1,8 @@
 llama-cpp-python
+huggingface-hub
 sqlalchemy
 pydantic
 python-dotenv
 dotenv
 questionary
+pytest
