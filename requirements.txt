@@ -1,6 +1,7 @@
 llama-cpp-python
 huggingface-hub
 google-genai
+httpx
 sqlalchemy
 pydantic
 python-dotenv

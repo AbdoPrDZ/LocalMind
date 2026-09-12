@@ -54,14 +54,17 @@ The `Chat` service keeps a compact text **context** summary per chat (column
 memory optimization. The context description (`CONTEXT_INSTRUCTIONS` in
 `apps/base.py`, not a file) is appended to the system prompt with the current
 summary, and the model is asked to append the COMPLETE updated summary as the
-very last part of every answer wrapped in `<context>...</context>`.
+very last part of every answer wrapped in exactly the lowercase tags
+`<context>...</context>` — and to NEVER mention/narrate the update to the user
+(bookkeeping is silent, so the model just answers).
 
 - Non-streaming: `_extract_context()` splits the raw reply into the new context
   and the visible answer; the new context is saved via `_set_context()`.
 - Streaming: `_stream_strip_context()` yields the visible text while buffering
   a small tail so tags split across chunks are never shown; the extracted
   context is saved when the stream completes. An unclosed `<context>` block is
-  captured rather than leaked.
+  captured rather than leaked. Tag matching is case-insensitive (free-router
+  models commonly emit `<Context>`/`</CONTEXT>`).
 - `_limit_context()` clamps the persisted summary to `MAX_CONTEXT_CHARS`
   (12 000) so it can never grow unbounded.
 - Failed/interrupted inference persists the user message but saves no assistant
@@ -70,6 +73,8 @@ very last part of every answer wrapped in `<context>...</context>`.
   between the base system prompt and the chat-context instructions, plus a
   `CURRENT CHAT ID:` line so the LLM can populate `source_chat_id` on
   `save_memory` calls.
+- `resources/SYSTEM_PROMPT.md` likewise instructs the model that memory saves
+  and context updates are silent — never announced to the user.
 
 The modules `Chat`/`Message` ORM classes register **read-only** for the LLM
 (`create/update/delete` disabled) so only this service writes conversation data.
@@ -120,7 +125,7 @@ ABC for all tools. Each tool declares:
 `SettingsService.apply_to_env()`; `reset_llm()` clears the singleton so the
 next call rebuilds it with a new selection. The provider is selected by
 `LLM_PROVIDER` in `.env` (overridden by the `settings` table when set):
-`local` (default) or `gemini`. Providers live in `utils/providers/` and each
+`local`, `gemini`, or `openai`. Providers live in `utils/providers/` and each
 exposes the same OpenAI-style `create_chat_completion(messages, tools,
 max_tokens, stream)` API (dict result / iterator of dict chunks), so the agent
 is backend-agnostic.
@@ -138,8 +143,20 @@ is backend-agnostic.
   `response.usage_metadata` on non-stream replies and a final `{"usage": ...}`
   chunk on streams. Carries Gemini 3.x `thought_signature`/`id` through
   tool-call round-trips; `stream_marker` is `None`, so text streams verbatim.
+- `OpenAILLMProvider` — one OpenAI-compatible HTTP backend (httpx) serving
+  BOTH free routers and Gemini (`OPENAI_MODEL`, default `openrouter/free`).
+  Model ids starting with `gemini-` resolve to Gemini's OpenAI-compatible
+  endpoint (`GEMINI_API_KEY`, `GEMINI_OPENAI_BASE_URL`); any other id routes to
+  the free backend (`OPENAI_API_KEY`/`OPENROUTER_API_KEY`, `OPENAI_BASE_URL`,
+  default `https://openrouter.ai/api/v1`) — see
+  `resources/models/free_models.json` for ~140 cost-0 model ids grouped by
+  router. Non-stream returns the server's OpenAI-shaped body verbatim;
+  streaming parses SSE (`iter_stream_chunks`) and merges OpenRouter-style
+  fragmented `tool_calls` deltas into complete calls emitted as the final
+  chunk. `stream_marker` is `None`; a missing key surfaces in `_endpoint()` as
+  a friendly `ValueError` when a call is actually made.
 
-Note that when `LLM_PROVIDER=gemini`, `ENV.init()` only requires
+Note that when `LLM_PROVIDER=gemini` (or `openai`), `ENV.init()` only requires
 `DATABASE_URL` (plus the provider's own settings) — `MODELS_DIR`/`MODEL_NAME`
 are optional. Stream-mode text/tool-call output is normalized per provider in
 `utils/agent.py` (marker-gated for Qwen3, verbatim for online providers).
@@ -152,7 +169,9 @@ are optional. Stream-mode text/tool-call output is normalized per provider in
 - `resolve_provider()` — settings override else `LLM_PROVIDER` (default
   `"local"`).
 - `resolve_model(provider)` — settings override else `GEMINI_MODEL` for gemini
-  (default `DEFAULT_GEMINI_MODEL`) or `MODEL_NAME` for local.
+  (default `DEFAULT_GEMINI_MODEL`), `OPENAI_MODEL` for openai (default
+  `openrouter/free`), or `MODEL_NAME` for local.
+  Model env var mapping lives in `_model_env(provider)`.
 - `Chat.create()`/`Chat.load()` open usage sessions with the resolved
   provider/model; the cmd app validates and persists a new choice via
   `/select model` (see `workflows.md`).

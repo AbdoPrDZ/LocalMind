@@ -70,6 +70,12 @@ def test_estimate_cost_local_is_free():
   assert estimate_cost("local", "qwen3-4b-instruct-gguf", 10_000, 10_000) == 0.0
 
 
+def test_estimate_cost_gemini_model_via_openai_provider_is_billed():
+  assert estimate_cost("openai", "gemini-3.5-flash", 1_000_000, 0) == pytest.approx(1.50)
+  assert estimate_cost("openai", "openrouter/free", 1_000_000, 0) == 0.0
+  assert estimate_cost("openai", "gemini-2.5-flash", 1_000_000, 0) == pytest.approx(0.30)
+
+
 # ---------------------------------------------------------------------------
 # Session lifecycle and aggregations
 # ---------------------------------------------------------------------------

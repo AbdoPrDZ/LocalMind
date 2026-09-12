@@ -74,9 +74,11 @@ via `@register_model`, so the LLM can neither see nor touch it.
   (from `Chat.close()` on exit). Aggregations: `totals()`, `totals_for_chat()`,
   `totals_by_chat()`, `totals_by_model()`.
 - Cost is an estimate: `estimate_cost()` uses `GEMINI_PRICING_PER_1M` (model
-  suffixes `-preview`/`-latest` stripped via `model_base()`); non-gemini
-  providers cost 0. The Gemini API exposes no exact billed amount or remaining
-  quota. Importing `models.usage` in `database.py` registers the table.
+  suffixes `-preview`/`-latest` stripped via `model_base()`); any Gemini model
+  is billed by name no matter which provider serves it (`gemini` or `openai`),
+  everything else costs 0. The Gemini API exposes no exact billed amount or
+  remaining quota. Importing `models.usage` in `database.py` registers the
+  table.
 
 ## Runtime settings (`models/settings.py`)
 
@@ -91,7 +93,8 @@ selection (keys `provider`, `<provider>_model`); the `.env` values
   (returns the default) so it is safe before `init_db()`.
 - Resolution helpers: `resolve_provider()` (setting else `LLM_PROVIDER` or
   `"local"`) and `resolve_model(provider)` (setting else `GEMINI_MODEL`/
-  `MODEL_NAME`/`unknown`). Used by usage accounting, `get_llm()` and the cmd
+  `OPENAI_MODEL`/`MODEL_NAME`/`unknown`; env var per provider via
+  `_model_env()`). Used by usage accounting, `get_llm()` and the cmd
   app's `/settings` display.
 - `utils/llm.py::reset_llm()` drops the cached provider singleton so the next
   call rebuilds it with the new selection. Importing `models.settings` in

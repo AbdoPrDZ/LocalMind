@@ -103,11 +103,25 @@ The backend is switched with `LLM_PROVIDER` in `.env`:
 - **`gemini`** — talks to Google's Gemini API over the network
   (`google-genai`). Only `DATABASE_URL` plus the Gemini settings are used;
   `MODELS_DIR`/`MODEL_NAME` are not required.
+- **`openai`** — one OpenAI-compatible backend for free routers *and* Gemini.
+  Models starting with `gemini-` use Gemini's OpenAI-compatible endpoint
+  (`GEMINI_API_KEY`, `GEMINI_OPENAI_BASE_URL`); every other model routes to the
+  free backend (`OPENAI_API_KEY`/`OPENROUTER_API_KEY`, `OPENAI_BASE_URL`,
+  default `https://openrouter.ai/api/v1`). See
+  `resources/models/free_models.json` for ~140 free model ids.
 
 ```dotenv
 LLM_PROVIDER=gemini
 GEMINI_API_KEY=your-api-key          # https://aistudio.google.com/apikey
 GEMINI_MODEL=gemini-3.5-flash        # default if omitted
+```
+
+```dotenv
+LLM_PROVIDER=openai
+OPENAI_API_KEY=your-key              # or OPENROUTER_API_KEY
+OPENAI_MODEL=openrouter/free         # default if omitted; see resources/models/free_models.json
+OPENAI_BASE_URL=https://openrouter.ai/api/v1
+GEMINI_API_KEY=your-key              # only if you use gemini-* models through this provider
 ```
 
 Providers live in `utils/providers/` and all speak the same OpenAI-style
@@ -169,11 +183,17 @@ the choice in the `settings` table — the `.env` values stay as defaults:
 ```cmd
 /select model gemini gemini-3.5-flash-lite
 /select model local qwen3-4b-instruct-gguf
+/select model openai openrouter/free
 ```
 
-The provider must be one of `PROVIDERS` (`local`, `gemini`); a gemini selection
-requires `GEMINI_API_KEY` in `.env`, and a local selection requires the model to
-be installed (`scripts/install_model.py <name>`). The active provider/model is
+The provider must be one of `PROVIDERS` (`local`, `gemini`, `openai`); a gemini
+selection requires `GEMINI_API_KEY` in `.env`, and a local selection requires
+the model to be installed (`scripts/install_model.py <name>`). The `openai`
+provider serves both free routers and Gemini through one OpenAI-compatible
+interface: any model starting with `gemini-` goes to Gemini, anything else
+routes to the free backend (`OPENAI_BASE_URL`, default OpenRouter). See
+`resources/models/free_models.json` for ~140 free model ids and the router API
+key/base url each needs. The active provider/model is
 written into the environment before the LLM provider is (re)built, and usage
 accounting records the newly selected provider/model for new sessions.
 

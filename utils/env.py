@@ -17,6 +17,11 @@ LOCAL_REQUIRED_ENV_VARS = [
 # .env sits next to modren-app/ (independent of the current working dir).
 ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 
+DEFAULT_OPENAI_MODEL = "openrouter/free"
+DEFAULT_OPENAI_BASE_URL = "https://openrouter.ai/api/v1"
+DEFAULT_GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+
+
 class ENV:
 
   @staticmethod
@@ -52,11 +57,24 @@ class ENV:
 
     if not value:
       raise ValueError(
-        "GEMINI_API_KEY is required when LLM_PROVIDER=gemini. "
+        "GEMINI_API_KEY is required when LLM_PROVIDER=gemini (or when using "
+        "a gemini-* model through LLM_PROVIDER=openai). "
         "Get one at https://aistudio.google.com/apikey."
       )
 
     return value
+
+  @staticmethod
+  def get_openai_base_url() -> str:
+    return ENV.get("OPENAI_BASE_URL", default=DEFAULT_OPENAI_BASE_URL)
+
+  @staticmethod
+  def get_openai_api_key() -> str:
+    return ENV.get("OPENAI_API_KEY") or ENV.get("OPENROUTER_API_KEY")
+
+  @staticmethod
+  def get_openai_model() -> str:
+    return ENV.get("OPENAI_MODEL", default=DEFAULT_OPENAI_MODEL) or DEFAULT_OPENAI_MODEL
 
   @staticmethod
   def get_database_url() -> str:

@@ -53,7 +53,9 @@ CHAT CONTEXT:
 
 Use the CHAT CONTEXT above as your memory of everything said earlier in this chat.
 
-After EVERY answer, append the COMPLETE updated CHAT CONTEXT as the very LAST part of your reply, wrapped in <context>...</context> tags. Nothing else may be inside the tags. The updated context reflects everything said in this exchange.
+The <context>...</context> block is INTERNAL bookkeeping between you and the app — the user never sees it. Never mention, announce, or narrate that you are saving, updating, or maintaining a context or memory; just do it silently and answer the user's question directly.
+
+After EVERY answer, append the COMPLETE updated CHAT CONTEXT as the very LAST part of your reply, wrapped in exactly the lowercase tags <context>...</context>. Nothing else may be inside the tags. Never place the tags anywhere else in the reply and never wrap them in code fences or markdown.
 """
 
 CONTEXT_TAG_RE = re.compile(r"<context>(.*?)</context>", re.DOTALL | re.IGNORECASE)
@@ -115,7 +117,7 @@ def _stream_strip_context(
 
     while buffer:
       if in_context:
-        end = buffer.find(close_tag)
+        end = buffer.lower().find(close_tag)
         if end == -1:
           if len(buffer) > hold_size:
             context_buffer += buffer[:-hold_size]
@@ -128,7 +130,7 @@ def _stream_strip_context(
         context_buffer = ""
         continue
 
-      start = buffer.find(open_tag)
+      start = buffer.lower().find(open_tag)
       if start == -1:
         if len(buffer) > hold_size:
           safe = buffer[:-hold_size]

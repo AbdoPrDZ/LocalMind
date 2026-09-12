@@ -31,7 +31,10 @@ services     (services/memory.py) MemoryService; global-context builder
                                    overrides (settings table, `.env` is default)
     │
 LLM backend  (utils/llm.py)    provider factory (get_llm) over
-             (utils/providers/)  local llama-cpp OR online Gemini (OpenAI-style API)
+             (utils/providers/)  local llama-cpp OR online Gemini OR an
+                                 OpenAI-compatible backend that serves both
+                                 free routers and Gemini via one interface
+                                 (all speak the OpenAI-style API)
     │
 database     (database.py)     SQLAlchemy + SQLite
 ```
@@ -65,7 +68,13 @@ retrieve more on demand via `search_global_memory` / `get_chat_context` /
 All runtime config lives in `.env` at the project root (loaded by
 `utils/env.py`). `DATABASE_URL` is always required. `LLM_PROVIDER` picks the
 backend: `local` (default) additionally requires `MODELS_DIR`, `MODEL_NAME`;
-`gemini` uses `GEMINI_API_KEY` and optional `GEMINI_MODEL` (online).
+`gemini` uses `GEMINI_API_KEY` and optional `GEMINI_MODEL` (online); `openai`
+serves free routers AND Gemini through one OpenAI-compatible interface — model
+ids starting with `gemini-` go to Gemini (`GEMINI_API_KEY`,
+`GEMINI_OPENAI_BASE_URL`), anything else routes to the free backend
+(`OPENAI_API_KEY`/`OPENROUTER_API_KEY`, `OPENAI_BASE_URL` default
+`https://openrouter.ai/api/v1`, `OPENAI_MODEL` default `openrouter/free`;
+~140 free model ids in `resources/models/free_models.json`).
 Relative paths in `.env` are resolved against the **current working directory**
 — run from the project root.
 

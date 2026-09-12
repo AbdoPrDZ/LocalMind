@@ -4,8 +4,9 @@ One ``Usage`` row is opened when a chat starts/resumes, accumulates tokens and
 estimated cost per LLM call, and is closed when the chat is exited.
 
 Costs are estimates. Gemini pricing (per 1M tokens, USD paid tier) is looked
-up from ``GEMINI_PRICING_PER_1M``; the Gemini API does not expose the exact
-billed amount or a key's remaining quota. Local llama-cpp runs are free
+up from ``GEMINI_PRICING_PER_1M`` — including Gemini models used through the
+``openai`` provider; the Gemini API does not expose the exact billed amount or
+a key's remaining quota. Free routers and local llama-cpp runs are free
 (cost 0) but tokens are still counted.
 """
 
@@ -47,14 +48,16 @@ def estimate_cost(
   prompt_tokens: int,
   completion_tokens: int,
 ) -> float:
-  """Estimated USD cost of a call. Non-gemini providers are free."""
-  if provider != "gemini":
+  """Estimated USD cost of a call.
+
+  Gemini models are billed per token no matter which provider serves them
+  (``gemini`` or ``openai``); everything else is free.
+  """
+  base = model_base(model)
+  if provider != "gemini" and not base.startswith("gemini"):
     return _FREE_PROVIDER_COST
 
-  input_price, output_price = GEMINI_PRICING_PER_1M.get(
-    model_base(model),
-    GEMINI_DEFAULT_PRICE,
-  )
+  input_price, output_price = GEMINI_PRICING_PER_1M.get(base, GEMINI_DEFAULT_PRICE)
   return (
     prompt_tokens * input_price + completion_tokens * output_price
   ) / 1_000_000

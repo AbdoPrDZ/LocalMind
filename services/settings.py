@@ -14,7 +14,7 @@ from sqlalchemy.exc import OperationalError
 
 from database import get_session
 from models.settings import Setting
-from utils.env import ENV
+from utils.env import DEFAULT_OPENAI_MODEL, ENV
 from utils.providers.gemini import DEFAULT_GEMINI_MODEL
 
 PROVIDER_KEY = "provider"
@@ -22,6 +22,15 @@ PROVIDER_KEY = "provider"
 
 def _provider_model_key(provider: str) -> str:
   return f"{provider}_model"
+
+
+def _model_env(provider: str) -> str:
+  """Env var that feeds the model default for a provider."""
+  if provider == "gemini":
+    return "GEMINI_MODEL"
+  if provider == "openai":
+    return "OPENAI_MODEL"
+  return "MODEL_NAME"
 
 
 class SettingsService:
@@ -85,7 +94,7 @@ class SettingsService:
     os.environ["LLM_PROVIDER"] = provider
     model = SettingsService.get_model(provider)
     if model is not None:
-      os.environ["GEMINI_MODEL" if provider == "gemini" else "MODEL_NAME"] = model
+      os.environ[_model_env(provider)] = model
 
 
 def resolve_provider() -> str:
@@ -103,4 +112,6 @@ def resolve_model(provider: str) -> str:
     return stored
   if provider == "gemini":
     return ENV.get("GEMINI_MODEL", default=DEFAULT_GEMINI_MODEL)
+  if provider == "openai":
+    return ENV.get("OPENAI_MODEL", default=DEFAULT_OPENAI_MODEL)
   return ENV.get("MODEL_NAME", default="unknown")

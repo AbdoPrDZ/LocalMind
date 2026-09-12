@@ -13,7 +13,8 @@ def get_llm() -> LLMProvider:
 
   Persisted provider/model overrides are applied to the environment before
   construction so the provider reflects the current ``/select model`` choice.
-  Provider is selected by ``LLM_PROVIDER``: ``local`` (default) or ``gemini``.
+  Provider is selected by ``LLM_PROVIDER``: ``local``, ``gemini``, or
+  ``openai``.
   """
   global _llm
 

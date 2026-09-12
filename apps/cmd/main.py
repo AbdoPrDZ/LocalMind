@@ -115,6 +115,15 @@ def _print_settings() -> None:
       print("API key  : set")
     except ValueError:
       print("API key  : NOT SET — set GEMINI_API_KEY in .env before using Gemini")
+  elif provider == "openai":
+    if model.strip().lower().startswith("gemini"):
+      try:
+        ENV.get_gemini_api_key()
+        print("API key  : set (Gemini — GEMINI_API_KEY)")
+      except ValueError:
+        print("API key  : NOT SET — set GEMINI_API_KEY in .env before using Gemini models")
+    else:
+      print("API key  : " + ("set (free router)" if (ENV.get("OPENAI_API_KEY") or ENV.get("OPENROUTER_API_KEY")) else "NOT SET — set OPENAI_API_KEY or OPENROUTER_API_KEY in .env"))
   if stored_provider:
     print("\nUse /select model to change, or clear the settings row to revert to .env.")
 
@@ -134,6 +143,16 @@ def _select_model(provider: str, model: str) -> str | None:
       ENV.get_gemini_api_key()
     except ValueError as exc:
       return str(exc)
+  elif provider == "openai":
+    if model.strip().lower().startswith("gemini"):
+      try:
+        ENV.get_gemini_api_key()
+      except ValueError as exc:
+        return str(exc)
+    else:
+      api_key = ENV.get("OPENAI_API_KEY") or ENV.get("OPENROUTER_API_KEY")
+      if not api_key:
+        return "Set OPENAI_API_KEY (or OPENROUTER_API_KEY) in .env before using free models via LLM_PROVIDER=openai."
   else:
     try:
       path = os.path.join(ENV.get_models_dir(), model, "model.gguf")

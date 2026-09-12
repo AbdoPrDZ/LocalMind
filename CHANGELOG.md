@@ -9,6 +9,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- OpenAI-compatible `openai` LLM provider (`utils/providers/openai.py`): one
+  backend that serves both free online models and Gemini. Model ids starting
+  with `gemini-` call Gemini's OpenAI-compatible endpoint
+  (`GEMINI_API_KEY`, `GEMINI_OPENAI_BASE_URL`); everything else routes to the
+  free router configured by `OPENAI_BASE_URL` (default OpenRouter) using
+  `OPENAI_API_KEY`/`OPENROUTER_API_KEY`. It speaks OpenAI chat completions over
+  httpx in both non-streaming and SSE streaming form, merges OpenRouter-style
+  fragmented streaming `tool_calls` back into complete calls, and is driven by
+  `OPENAI_MODEL` (default `openrouter/free`).
+- Free model catalog at `resources/models/free_models.json`: ~140 cost-0 model
+  ids copied from opencode's own model registry, grouped by router (bothub,
+  openrouter, kilo, unorouter, orcarouter, tokenrouter, zenmux, kenari,
+  aihubmix, nvidia), each with its API base url and env key. Paid-by-subscription
+  cost-0 tiers (e.g. openrouter `auto`/`fusion`, kenari non-free entries) are
+  excluded. Tracked in git (`.gitignore` exception next to `registry.json`).
+- `httpx` added to `requirements.txt` (already a transitive dep of `google-genai`).
+- Usage accounting: Gemini models used through the `openai` provider are now
+  billed with Gemini pricing; free routers stay cost 0
+  (`estimate_cost` in `services/usage.py`).
+
+### Fixed
+
+- `openai` provider joined the base URL without a separator
+  (`.../api/v1chat/completions` → HTTP 404); `_chat_url()` now normalizes the
+  trailing slash for both the free router and Gemini endpoints.
+- Streaming tag-strip in `apps/base.py` (`_stream_strip_context`) matched the
+  `<context>` tags only case-sensitively, so mixed-case tags (common with
+  free-router models) leaked into the visible answer; matching is now
+  case-insensitive.
+
+### Changed
+
+- The model is now told (in `resources/SYSTEM_PROMPT.md` and the chat-context
+  instructions in `apps/base.py`) that chat-context updates and memory saves
+  are **silent internal bookkeeping**: it must never announce them to the user,
+  must wrap the updated context in exactly the lowercase `<context>...</context>`
+  tags, and must not wrap them in code fences. The model just answers.
+
 - Chat titles + lazy creation: a chat row is only created for a real message
   (the cmd app no longer opens an empty chat on startup). After the first
   exchange `Chat.send()`/`send_stream()` ask the active LLM for a short title
