@@ -28,6 +28,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Usage accounting: Gemini models used through the `openai` provider are now
   billed with Gemini pricing; free routers stay cost 0
   (`estimate_cost` in `services/usage.py`).
+- New tool sets, always wired into the agent but safely gated:
+  - File tools (`tools/files.py`): `read_file`, `write_file`, `list_dir`
+    scoped to the `ALLOWED_PLACES` folders (`.env`, default
+    `workspace=./workspace`). Every operation carries a `place` parameter
+    constrained to the configured folder names; paths are containment-checked
+    (realpath vs configured roots) so the LLM cannot escape them.
+  - Web tools (`tools/web.py`): keyless `web_search` (Bing RSS) and
+    `fetch_page` (httpx + stdlib HTML→text extraction), no API key required.
+  - System tools (`tools/system.py`): `current_datetime` (IANA or local,
+    `tzdata` added to requirements), `get_system_info` (platform; `psutil`
+    only when installed), `clipboard_get`/`clipboard_set` (PowerShell, Windows).
+  - Shell tool (`tools/shell.py`): `run_command` runs a command only after the
+    user approves it — gated by `ENABLE_SHELL_TOOLS=1`, requires a short
+    `description`, asks via the app's question handler ("Yes, run it" / "No,
+    cancel"), and confines `cwd` to the allowed folders.
+  - Ask-user tool (`tools/ask.py`): generic `ask_user` — each interface injects
+    its own blocking question handler `(question, options, allow_free_text) ->
+    answer | None`; without a handler (or when the user dismisses) the tool
+    reports an error to the model instead of crashing.
+- Notes model (`models/note.py`): a registered CRUD store (title, content,
+  tags, timestamps) served by the same generic `create/get/list/update/delete`
+  tools — no tool is specialized for it.
+- `tzdata` added to `requirements.txt` (IANA timezones on Windows).
+- Tool knowledge is now **remembered for you**:
+  - The agent records every tool result it executes
+    (`tool_results` in `utils/agent.py`, `take_tool_results()`), and the `Chat`
+    service auto-folds them into the chat context as a "RECENT TOOL RESULTS"
+    section whenever the model emits no `<context>` block of its own
+    (`_synthesize_tool_context` in `apps/base.py`) — so fetched pages, search
+    results, and file reads stop being lost between turns.
+  - Durable tool findings (`fetch_page`, `web_search`, `read_file`,
+    `ask_user`) are also auto-captured as low-importance `fact` global memories
+    (`_capture_global_memories`, gated by `AUTO_MEMORIZE=1` in `.env`, disabled
+    with `0`; content truncated to 1200 chars and deduplicated by the memory
+    service) — so the profile you had it fetch once survives into other chats.
+  - `Agent.clean_answer()` hardened against leaked reasoning for both tag
+    styles now strip `<thinking>...</thinking>`, `<|im_start|>think ... /
+    <|im_start|>answer ... / response`, and bare `thinking ... response` /
+    `response ...` marker preambles (case-insensitive).
+- `AUTO_MEMORIZE` added to `.env.example`.
+- Keyless `free` LLM provider (`utils/providers/free.py`, `LLM_PROVIDER=free`):
+  interact with a hosted free model with **no API key at all**. Endpoint and
+  model come from a new registry `resources/models/keyless_models.json`
+  (`FREE_ENDPOINT`/`FREE_MODEL`, default Pollinations.ai anonymous tier +
+  `openai-fast`; `FREE_BASE_URL` overrides the whole endpoint). It is a thin
+  keyless `chat/completions` HTTP client that reuses the `openai` provider's
+  URL joining, SSE parsing (incl. tool-call merging) and error formatting — the
+  agent/tool loop is untouched. Registered in the provider factory
+  (`utils/providers/__init__.py`), integrated with `/select model free <model>`
+  and `/settings`; no fallback or auto-switching, matching the "you pick the
+  endpoint" design.
+  - **Notice-guard**: keyless tiers sometimes answer with injected promotional
+    "raise the key budget" spam (empirically confirmed on the anonymous
+    Pollinations tier — it currently injects this on every reply). The provider
+    detects that boilerplate, retries once with a "don't advertise" nudge, and
+    if the endpoint still advertises, raises a clear error pointing at
+    `FREE_MODEL`/`FREE_ENDPOINT`/`LLM_PROVIDER` — a polluted reply is never
+    shown to the user. Verified live: `keylessai.thryx.workers.dev` is DNS-dead
+    and `api.airforce` now requires a paid balance/Authorization, so
+    Pollinations' anonymous tier is the only live keyless endpoint left and the
+    free provider intentionally stays experimental.
 
 ### Fixed
 
@@ -38,6 +99,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `<context>` tags only case-sensitively, so mixed-case tags (common with
   free-router models) leaked into the visible answer; matching is now
   case-insensitive.
+- Crashes persisting text with lone surrogates (Windows console input can
+  carry unpaired UTF-16 units) — `UnicodeEncodeError: 'utf-8' codec can't
+  encode ... surrogates not allowed` on the message INSERT. New `_clean_text()`
+  in `apps/base.py` strips invalid units (valid emoji untouched) before every
+  write: user/assistant messages, chat context, titles, and auto-captured
+  memories.
+- Misleading free-router error message: the URL was printed without the joining
+  slash (`.../api/v1chat/completions`) while the real request was correct —
+  `_error_text()` in `utils/providers/openai.py` now shows the joined URL and
+  appends an actionable hint for HTTP 429 (daily free quota exhausted: wait for
+  reset / add credits / switch to `LLM_PROVIDER=local` or `gemini`).
+- The cmd app traceback-crashed on any provider error (e.g. a 429 rate limit);
+  `_print_reply()` in `apps/cmd/main.py` now prints a one-line error and keeps
+  the interactive loop alive (the user message stays persisted either way).
+- Knowledge loss between turns and chats: when the model sent no `<context>`
+  block, tool results (e.g. a fetched GitHub profile) only existed inside that
+  one reply and vanished afterwards — tool outputs are now folded into the chat
+  context automatically and durable ones captured as global facts. The chat
+  context itself could also be overwritten when the model summarized only the
+  newest topic; it now merges and accumulates instead of replacing.
 
 ### Changed
 
@@ -46,6 +127,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are **silent internal bookkeeping**: it must never announce them to the user,
   must wrap the updated context in exactly the lowercase `<context>...</context>`
   tags, and must not wrap them in code fences. The model just answers.
+- The CHAT CONTEXT **accumulates, it never replaces**: the model is instructed
+  to emit the whole conversation in order and `_set_context()` merges through
+  `_merge_contexts()` — an update already containing the stored context replaces
+  it, otherwise the new topic is appended and duplicate lines dropped — so a
+  weak model overwriting the summary with the latest topic no longer erases
+  what came before.
 
 - Chat titles + lazy creation: a chat row is only created for a real message
   (the cmd app no longer opens an empty chat on startup). After the first

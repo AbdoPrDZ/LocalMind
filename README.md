@@ -31,9 +31,11 @@ shared service (apps/base.py)   Chat: ENV init, DB init, agent build,
 agent        (utils/agent.py)  tool-calling loop, handles native + Qwen3 <tool_call>
     │
 LLM backend  (utils/llm.py)    provider factory (get_llm) over
-             (utils/providers/)  local llama-cpp OR online Gemini (OpenAI-style API)
+             (utils/providers/)  local llama-cpp, Gemini, OpenAI-compatible
+                                  routers, keyless free endpoints — same API
     │
-tools        (tools/model.py)  generic CRUD tools generated from the model registry
+tools        (tools/*.py)         generic CRUD tools from the model registry,
+                                  plus scoped files/web/system/shell/ask tools
     │
 database     (database.py)     SQLAlchemy + SQLite
 ```
@@ -47,6 +49,39 @@ The agent also carries **global memory** across conversations: memories
 bounded snapshot is injected into every prompt, and the model retrieves/extends
 it through `search_global_memory`, `get_memory`, `get_chat_context`,
 `search_chat_history`, and `save_memory`.
+
+Beyond CRUD and memory, the agent gets a safe, toolset that lets it actually
+do things — each gated so the model cannot misbehave on its own:
+
+- **Files** (`tools/files.py`): `read_file`, `write_file`, `list_dir` scoped
+  to the folders in `ALLOWED_PLACES` (default `workspace=./workspace`). Every
+  call names a `place` and is containment-checked, so the model can never
+  escape the configured folders.
+- **Web** (`tools/web.py`): keyless `web_search` (Bing RSS) and `fetch_page`
+  (readable text) — no API key required.
+- **System** (`tools/system.py`): `current_datetime` (IANA/local), machine info,
+  and Windows clipboard read/write.
+- **Shell** (`tools/shell.py`): `run_command` runs a command **only after you
+  approve it**. It is off unless `ENABLE_SHELL_TOOLS=1` in `.env`; the model
+  must describe the command, you confirm or cancel in the terminal, and the
+  command's working directory stays inside the allowed folders.
+- **Ask** (`tools/ask.py`): `ask_user` lets the model ask you a clarifying
+  question mid-conversation (choices or free text) and wait for your answer.
+- **Notes** (`models/note.py`): a registered store (title/content/tags) served
+  by the same generic CRUD tools as every other model.
+
+Every tool result is **remembered for you**: the chat context accumulates the
+whole conversation (topics are appended, never overwritten), and tool findings —
+fetched pages, web searches, read files, your answers — are auto-captured as
+low-importance global facts (`AUTO_MEMORIZE=1` in `.env`, set `0` to disable),
+so durable knowledge (your GitHub profile, a URL, a file you asked it to read)
+survives across chats even when the model never echoes it back.
+
+```dotenv
+ALLOWED_PLACES=workspace=./workspace   # optional: docs=./docs, scratch=./tmp, ...
+ENABLE_SHELL_TOOLS=0                   # set to 1 to allow (approved) shell commands
+AUTO_MEMORIZE=1                        # auto-capture tool findings as global facts
+```
 
 Usage (tokens + estimated cost) is tracked per chat session in the `usage`
 table: a session opens when a chat starts/resumes, accumulates tokens on every
@@ -109,6 +144,15 @@ The backend is switched with `LLM_PROVIDER` in `.env`:
   free backend (`OPENAI_API_KEY`/`OPENROUTER_API_KEY`, `OPENAI_BASE_URL`,
   default `https://openrouter.ai/api/v1`). See
   `resources/models/free_models.json` for ~140 free model ids.
+- **`free`** — a hosted free LLM with **no API key at all**. The endpoint and
+  model come from `resources/models/keyless_models.json` (default: Pollinations
+  anonymous tier, `openai-fast`). `FREE_ENDPOINT`/`FREE_MODEL` select them;
+  `FREE_BASE_URL` overrides the endpoint. No fallback and no switching — you
+  pick it, LocalMind talks to exactly that endpoint. Experimental: keyless
+  tiers can be rate-limited or answer with injected promo/budget notices.
+  A built-in notice-guard detects those ads, retries once (nudging the model
+  not to advertise), and raises a clear error instead of showing you the ad —
+  a reply is never surfaced polluted.
 
 ```dotenv
 LLM_PROVIDER=gemini
@@ -122,6 +166,13 @@ OPENAI_API_KEY=your-key              # or OPENROUTER_API_KEY
 OPENAI_MODEL=openrouter/free         # default if omitted; see resources/models/free_models.json
 OPENAI_BASE_URL=https://openrouter.ai/api/v1
 GEMINI_API_KEY=your-key              # only if you use gemini-* models through this provider
+```
+
+```dotenv
+LLM_PROVIDER=free
+FREE_ENDPOINT=pollinations           # keyless endpoint in resources/models/keyless_models.json
+FREE_MODEL=openai-fast               # model at that endpoint (default if omitted)
+# FREE_BASE_URL=https://...          # optional override; no API key is ever required
 ```
 
 Providers live in `utils/providers/` and all speak the same OpenAI-style

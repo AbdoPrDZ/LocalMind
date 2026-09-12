@@ -3,6 +3,7 @@ from pathlib import Path
 from apps.base import (
   CONTEXT_TAG_RE,
   _extract_context,
+  _merge_contexts,
   _stream_strip_context,
   CONTEXT_INSTRUCTIONS,
 )
@@ -137,3 +138,49 @@ def test_context_instructions_forbid_announcing_updates():
 def test_system_prompt_forbids_narrating_memory_saves():
   prompt = Path("resources/SYSTEM_PROMPT.md").read_text(encoding="utf-8")
   assert "never tell the user you are doing" in prompt
+
+
+# ---------------------------------------------------------------------------
+# _merge_contexts: the context accumulates, it never replaces
+# ---------------------------------------------------------------------------
+
+
+def test_merge_contexts_uses_first_update_when_empty():
+  assert _merge_contexts(None, "The chat started with projects.") == "The chat started with projects."
+  assert _merge_contexts("", "Something about tasks.") == "Something about tasks."
+
+
+def test_merge_contexts_appends_new_topic_and_keeps_old():
+  merged = _merge_contexts(
+    "The chat started with the user asking about projects.",
+    "Then the user asked about the GitHub profile.",
+  )
+  assert "started with the user asking about projects" in merged
+  assert "asked about the GitHub profile" in merged
+  # Chronological order: old first, new appended.
+  assert merged.index("projects") < merged.index("GitHub profile")
+
+
+def test_merge_contexts_replaces_when_update_contains_full_previous():
+  previous = "The chat started with the user asking about projects."
+  update = (
+    "The chat started with the user asking about projects. Then the user asked "
+    "about the GitHub profile. Then about memory."
+  )
+  assert _merge_contexts(previous, update) == update
+
+
+def test_merge_contexts_deduplicates_exact_lines():
+  previous = "topic one"
+  update = "topic one\nAnother new topic"
+  merged = _merge_contexts(previous, update)
+  assert merged.count("topic one") == 1
+  assert "Another new topic" in merged
+
+
+def test_merge_contexts_respects_budget():
+  previous = "old " * 9_000
+  tail = "new topic at the end"
+  merged = _merge_contexts(previous, tail)
+  assert len(merged) <= 12_000
+  assert "new topic at the end" in merged

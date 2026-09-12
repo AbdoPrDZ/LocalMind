@@ -56,6 +56,15 @@ def print_answer(chat: Chat, prompt: str) -> None:
   print()
 
 
+def _print_reply(chat: Chat, prompt: str) -> None:
+  """Stream an answer; a provider/LLM failure prints a short error instead of
+  killing the session. The user message stays persisted either way."""
+  try:
+    print_answer(chat, prompt)
+  except Exception as exc:  # noqa: BLE001 - keep the interactive loop alive
+    print(f"\nError: {exc}")
+
+
 def _print_usage_summary(chat: Chat) -> None:
   """Print the chat's usage for the current session, plus global totals."""
   summary = chat.usage_summary()
@@ -124,6 +133,8 @@ def _print_settings() -> None:
         print("API key  : NOT SET — set GEMINI_API_KEY in .env before using Gemini models")
     else:
       print("API key  : " + ("set (free router)" if (ENV.get("OPENAI_API_KEY") or ENV.get("OPENROUTER_API_KEY")) else "NOT SET — set OPENAI_API_KEY or OPENROUTER_API_KEY in .env"))
+  elif provider == "free":
+    print("API key  : not required (keyless endpoint)")
   if stored_provider:
     print("\nUse /select model to change, or clear the settings row to revert to .env.")
 
@@ -153,6 +164,11 @@ def _select_model(provider: str, model: str) -> str | None:
       api_key = ENV.get("OPENAI_API_KEY") or ENV.get("OPENROUTER_API_KEY")
       if not api_key:
         return "Set OPENAI_API_KEY (or OPENROUTER_API_KEY) in .env before using free models via LLM_PROVIDER=openai."
+  elif provider == "free":
+    from utils.providers.free import available_models
+
+    if model.strip().lower() not in available_models() and not ENV.get("FREE_BASE_URL"):
+      return f"Model '{model}' is not a keyless model of this endpoint. Available: {', '.join(available_models())}."
   else:
     try:
       path = os.path.join(ENV.get_models_dir(), model, "model.gguf")
@@ -182,7 +198,7 @@ def _handle_select(chat: Chat | None, parts: list[str]) -> Chat | None:
       print("Usage: /select chat <id>")
       return chat
     try:
-      switched = Chat.load(chat_id)
+      switched = Chat.load(chat_id, question_handler=_ask_value)
     except ValueError as exc:
       print(exc)
       return chat
@@ -227,6 +243,30 @@ def _ask() -> str | None:
         }),
       ).ask()
     return input("You: ")
+  except (KeyboardInterrupt, EOFError):
+    print()
+    return None
+
+
+def _ask_value(prompt: str, options: list[str] | None, allow_free_text: bool) -> str | None:
+  """Question handler for the ``ask_user``/``run_command`` tools.
+
+  Backs the generic UI loop with questionary prompts (plain input() when not
+  on a real console). Returns the user's answer or ``None`` when they abort.
+  """
+  try:
+    if options:
+      return questionary.select(
+        prompt,
+        choices=options,
+        qmark="?",
+        pointer="»",
+      ).ask()
+    if not allow_free_text:
+      return None
+    if sys.stdin.isatty() and sys.stdout.isatty():
+      return questionary.text(prompt, qmark="?").ask()
+    return input(f"{prompt} ")
   except (KeyboardInterrupt, EOFError):
     print()
     return None
@@ -287,12 +327,12 @@ def interactive(chat: Chat | None) -> Chat | None:
       continue
 
     if current is None:
-      current = Chat.create()
+      current = Chat.create(question_handler=_ask_value)
       provider = resolve_provider()
       model = resolve_model(provider)
       print(f"\nChat #{current.id} · model: {provider} ({model})")
       print(f"Registered tools: {[t.name for t in current.tools]}")
-    print_answer(current, prompt)
+    _print_reply(current, prompt)
 
   return current
 
@@ -323,13 +363,17 @@ def main() -> None:
 
   # A chat row is only created for a real message: single-shot mode or the
   # first non-command prompt in interactive mode.
-  chat = Chat.load(args.chat) if args.chat is not None else None
+  chat = (
+    Chat.load(args.chat, question_handler=_ask_value)
+    if args.chat is not None
+    else None
+  )
 
   try:
     if args.prompt:
       if chat is None:
-        chat = Chat.create()
-      print_answer(chat, args.prompt)
+        chat = Chat.create(question_handler=_ask_value)
+      _print_reply(chat, args.prompt)
     else:
       if chat is not None:
         provider = resolve_provider()

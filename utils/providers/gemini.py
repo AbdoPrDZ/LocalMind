@@ -7,12 +7,34 @@ into OpenAI shape on the way out.
 """
 
 import json
+import logging
 from typing import Any, Iterator, Optional
 
 from utils.env import ENV
 from utils.providers.base import LLMProvider
 
 DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
+
+
+class _AfcNoticeFilter(logging.Filter):
+  """Drop google-genai's one-time "use AFC in Chat" advice from the logs.
+
+  ``google_genai.models`` emits a warning before every first
+  ``generate_content[_stream]`` call (AFC wrapper) recommending the ``Chat``
+  client. We use the raw request/response API and run the tool loop ourselves,
+  so the notice is pure noise and would interleave with streamed chunks in the
+  terminal. Filter attached at import; only the specific message is dropped.
+  """
+
+  def filter(self, record: logging.LogRecord) -> bool:
+    message = record.getMessage()
+    return not (
+      "automatic function calling" in message
+      and "is not recommended" in message
+    )
+
+
+logging.getLogger("google_genai.models").addFilter(_AfcNoticeFilter())
 
 #: OpenAPI-3-style keys Gemini's FunctionDeclaration accepts. Pydantic's JSON
 #: schema emits extra keys (``title``, ``$defs``, ``$ref``) that must be dropped.

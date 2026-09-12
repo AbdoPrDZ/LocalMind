@@ -1,6 +1,7 @@
 from models.chat import Chat
 from models.memory import Memory
 from models.message import Message
+from models.note import Note
 from models.project import Project
 from models.settings import Setting
 from models.task import Task
@@ -12,6 +13,7 @@ __all__ = [
   "Chat",
   "Memory",
   "Message",
+  "Note",
   "Project",
   "Setting",
   "Task",

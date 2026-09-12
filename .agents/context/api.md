@@ -8,10 +8,16 @@ directly — they go through the `Chat` service.
 Single shared gateway for all interfaces (cmd, web, api, desktop). A `Chat` is
 a persisted conversation: `Chat`/`Message` rows in the SQLite DB.
 
-- `Chat.create(title=None, system_prompt=None, max_tokens=1024)` — `ENV.init()`,
-  `init_db()`, builds the `Agent` with CRUD tools, starts a new chat.
-- `Chat.load(chat_id, ...)` — resume an existing chat; raises `ValueError`
+- `Chat.create(title=None, system_prompt=None, max_tokens=1024, question_handler=None)` — `ENV.init()`,
+  `init_db()`, builds the `Agent` with the full tool set, starts a new chat.
+- `Chat.load(chat_id, ..., question_handler=None)` — resume an existing chat; raises `ValueError`
   if the id is unknown.
+
+`question_handler` is the app's blocking question callback
+`(question, options: list[str] | None, allow_free_text: bool) -> str | None`
+(passes through `_build_agent` to the tools that need it — see `tools/ask.py`).
+cmd supplies `_ask_value` (questionary); web/api/desktop inject their own.
+Returning `None` means the user dismissed the prompt.
 - `chat.send(text) -> str` — the one call an interface needs. Saves the user
   message, sends `[system (+context), user]` (NOT the full history) to the LLM,
   saves the assistant reply, and returns it. On the first exchange an untitled
@@ -58,8 +64,16 @@ very last part of every answer wrapped in exactly the lowercase tags
 `<context>...</context>` — and to NEVER mention/narrate the update to the user
 (bookkeeping is silent, so the model just answers).
 
+The context **accumulates, it never replaces**: `CONTEXT_INSTRUCTIONS` tells
+the model to preserve every earlier topic and append the new exchange in order
+(`The chat started with ..., then ...`), and `_set_context()` enforces it via
+`_merge_contexts()` — an update that already contains the full stored context
+trusts the update; otherwise the new topic is appended and exact-duplicate
+lines dropped. A model overwriting the summary with just the latest topic no
+longer erases the conversation.
+
 - Non-streaming: `_extract_context()` splits the raw reply into the new context
-  and the visible answer; the new context is saved via `_set_context()`.
+  and the visible answer; the new context is merged/saved via `_set_context()`.
 - Streaming: `_stream_strip_context()` yields the visible text while buffering
   a small tail so tags split across chunks are never shown; the extracted
   context is saved when the stream completes. An unclosed `<context>` block is
@@ -67,6 +81,15 @@ very last part of every answer wrapped in exactly the lowercase tags
   models commonly emit `<Context>`/`</CONTEXT>`).
 - `_limit_context()` clamps the persisted summary to `MAX_CONTEXT_CHARS`
   (12 000) so it can never grow unbounded.
+- When the model sends **no `<context>` block**, the service falls back to the
+  agent's recorded `tool_results`: `_synthesize_tool_context()` folds them into
+  a "RECENT TOOL RESULTS" section (skipping memory/system/clipboard reads,
+  ~6000-char budget) saved as the new context — tool knowledge is not lost on
+  turns where the model skips the tags. Durable tools (`fetch_page`,
+  `web_search`, `read_file`, `ask_user`) are additionally auto-captured as
+  low-importance global facts by `_capture_global_memories()` (content truncated
+  to 1200 chars, deduplicated by the memory service; `AUTO_MEMORIZE=1` in
+  `.env`, `0` disables; failures swallowed) so findings survive into other chats.
 - Failed/interrupted inference persists the user message but saves no assistant
   reply or context update.
 - `_system_prompt()` injects a **bounded global context** snapshot (see below)
@@ -74,13 +97,11 @@ very last part of every answer wrapped in exactly the lowercase tags
   `CURRENT CHAT ID:` line so the LLM can populate `source_chat_id` on
   `save_memory` calls.
 - `resources/SYSTEM_PROMPT.md` likewise instructs the model that memory saves
-  and context updates are silent — never announced to the user.
+  and context updates are silent — never announced to the user, and durable
+  profile/world facts should be saved with `save_memory`.
 
 The modules `Chat`/`Message` ORM classes register **read-only** for the LLM
 (`create/update/delete` disabled) so only this service writes conversation data.
-
-> Caveat: the local 4B model does not always emit the `<context>` tag on the
-> first turn, so the produced context is best-effort.
 
 ## Agent (`utils/agent.py`)
 
@@ -106,7 +127,14 @@ full history):
   for the last `run`/`run_stream` and resets it. `Chat.send()` calls it once
   streaming/non-streaming finishes and persists the totals.
 - `clean_answer()` removes the model's `thinking ... response` preamble and any
-  stray `response` marker line, returning only the reply.
+  stray `response` marker line, returning only the reply. It also strips
+  `<thinking>...</thinking>`, `<|im_start|>think ... <|im_start|>answer ...`
+  and bare `thinking`/`response` marker lines (case-insensitive) so reasoning
+  never leaks into the visible answer.
+- Records every executed tool result: `self.tool_results` (reset at the start
+  of each `run`/`run_stream`, skipping results whose top level is an `"error"`
+  dict); `take_tool_results()` returns-and-clears so `Chat.send()` can persist
+  them without re-triggering.
 - Loop ends when the model replies with plain text.
 
 ## Tool (`utils/tool.py`)
@@ -118,6 +146,27 @@ ABC for all tools. Each tool declares:
 - `call(arguments)` — validates via the input model, then executes.
 - `execute(arguments) -> Any` — implemented by subclasses.
 
+## Tool builders (`tools/`)
+
+`_build_agent` assembles every tool call in `apps/base.py`:
+
+- `build_crud_tools()` — generic per-model CRUD (`tools/model.py`).
+- `build_memory_tools()` — the five memory tools (`tools/memory.py`).
+- `build_files_tools()` — `read_file`/`write_file`/`list_dir` scoped to the
+  `ALLOWED_PLACES` folders (`tools/files.py`); each schema's `place` field is
+  a `Literal` of configured place names and every resolved path is
+  containment-checked.
+- `build_web_tools()` — keyless `web_search` (Bing RSS) + `fetch_page`
+  (`tools/web.py`); HTTP-only, httpx + stdlib parsing.
+- `build_system_tools()` — `current_datetime` (IANA/local; needs `tzdata`),
+  `get_system_info`, Windows clipboard get/set (`tools/system.py`).
+- `build_ask_tools(handler)` — `ask_user`: asks the user via the injected
+  handler; no handler or a dismissed prompt → `{"error": ...}` to the model.
+- `build_shell_tools(handler)` — `run_command`: off unless
+  `ENABLE_SHELL_TOOLS=1`; requires a short `description`; asks the user to
+  approve ("Yes, run it" / "No, cancel") via the handler before executing;
+  `cwd` must be inside an allowed folder (`tools/shell.py`).
+
 ## LLM backend (`utils/llm.py`, `utils/providers/`)
 
 `get_llm()` lazily builds the configured provider once and reuses it
@@ -125,8 +174,8 @@ ABC for all tools. Each tool declares:
 `SettingsService.apply_to_env()`; `reset_llm()` clears the singleton so the
 next call rebuilds it with a new selection. The provider is selected by
 `LLM_PROVIDER` in `.env` (overridden by the `settings` table when set):
-`local`, `gemini`, or `openai`. Providers live in `utils/providers/` and each
-exposes the same OpenAI-style `create_chat_completion(messages, tools,
+`local`, `gemini`, `openai`, or `free`. Providers live in `utils/providers/`
+and each exposes the same OpenAI-style `create_chat_completion(messages, tools,
 max_tokens, stream)` API (dict result / iterator of dict chunks), so the agent
 is backend-agnostic.
 
@@ -155,11 +204,29 @@ is backend-agnostic.
   fragmented `tool_calls` deltas into complete calls emitted as the final
   chunk. `stream_marker` is `None`; a missing key surfaces in `_endpoint()` as
   a friendly `ValueError` when a call is actually made.
+- `FreeLLMProvider` — keyless OpenAI-compatible HTTP client
+  (`utils/providers/free.py`, `LLM_PROVIDER=free`): a hosted free model with no
+  API key at all. Endpoint + model resolved from
+  `resources/models/keyless_models.json` via `resolve_endpoint()`/`available_models()`
+  (`FREE_ENDPOINT`/`FREE_MODEL`, default `pollinations` / `openai-fast`;
+  `FREE_BASE_URL` overrides). Sends NO `Authorization` header; reuses the
+  `openai` provider's `_chat_url`/`iter_stream_chunks`/`_error_text` so SSE tool
+  calls and error formatting are identical. `stream_marker` is `None`. Registered
+  in the factory (`PROVIDERS["free"]`), wired into `/select model free <model>`,
+  `/settings`, and `services/settings.py` (`FREE_MODEL` env mapping).
+  Experimental: free endpoints rate-limit and can inject promotional notices.
+  A **notice-guard** (`_is_notice`/`_guarded` in `free.py`) detects injected
+  promo/budget boilerplate (`_NOTICE_MARKERS` — e.g. Pollinations' "raise the
+  key budget"), retries once with a `_RETRY_NUDGE` system message, and raises
+  `_notice_error(...)` if the endpoint still advertises — a polluted reply is
+  never surfaced to the user. Streaming is buffered through the guard, so
+  streamed output is validated before it is replayed as chunks.
 
-Note that when `LLM_PROVIDER=gemini` (or `openai`), `ENV.init()` only requires
-`DATABASE_URL` (plus the provider's own settings) — `MODELS_DIR`/`MODEL_NAME`
-are optional. Stream-mode text/tool-call output is normalized per provider in
-`utils/agent.py` (marker-gated for Qwen3, verbatim for online providers).
+Note that when `LLM_PROVIDER=gemini` (or `openai`/`free`), `ENV.init()` only
+requires `DATABASE_URL` (plus the provider's own settings) —
+`MODELS_DIR`/`MODEL_NAME` are optional. Stream-mode text/tool-call output is
+normalized per provider in `utils/agent.py` (marker-gated for Qwen3, verbatim
+for online providers).
 
 ## Runtime settings (`services/settings.py`)
 
@@ -170,7 +237,8 @@ are optional. Stream-mode text/tool-call output is normalized per provider in
   `"local"`).
 - `resolve_model(provider)` — settings override else `GEMINI_MODEL` for gemini
   (default `DEFAULT_GEMINI_MODEL`), `OPENAI_MODEL` for openai (default
-  `openrouter/free`), or `MODEL_NAME` for local.
+  `openrouter/free`), `FREE_MODEL` for free (default `DEFAULT_FREE_MODEL`),
+  or `MODEL_NAME` for local.
   Model env var mapping lives in `_model_env(provider)`.
 - `Chat.create()`/`Chat.load()` open usage sessions with the resolved
   provider/model; the cmd app validates and persists a new choice via

@@ -11,6 +11,7 @@ Chats and their messages are stored in the database, so a conversation can be
 resumed later with ``Chat.load(chat_id)``.
 """
 
+import json
 import os
 import re
 import sys
@@ -29,10 +30,16 @@ from database import get_session, init_db  # noqa: E402
 from models.chat import Chat as ChatRecord  # noqa: E402
 from models.message import Message as MessageRecord  # noqa: E402
 from services.global_context import build_global_context  # noqa: E402
+from services.memory import MemoryService, normalize_content  # noqa: E402
 from services.settings import resolve_model, resolve_provider  # noqa: E402
 from services.usage import UsageService  # noqa: E402
+from tools.ask import QuestionHandler, build_ask_tools  # noqa: E402
+from tools.files import build_files_tools  # noqa: E402
 from tools.memory import build_memory_tools  # noqa: E402
 from tools.model import build_crud_tools  # noqa: E402
+from tools.shell import build_shell_tools  # noqa: E402
+from tools.system import build_system_tools  # noqa: E402
+from tools.web import build_web_tools  # noqa: E402
 from utils.agent import Agent, clean_answer  # noqa: E402
 from utils.llm import get_llm  # noqa: E402
 from utils.tool import Tool  # noqa: E402
@@ -42,20 +49,43 @@ SYSTEM_PROMPT = ENV.get_system_prompt("You are a helpful assistant that can acce
 # Upper bound on the persisted chat context so it can never grow unbounded.
 MAX_CONTEXT_CHARS = 12_000
 
+#: Tools whose output is folded into the chat context automatically when the
+#: model sends no ``<context>`` block of its own (memory/sytem/clipboard reads
+#: are excluded — they are either already persistent or transient).
+CONTEXT_FOLD_EXCLUDED_TOOLS = frozenset({
+  "search_global_memory",
+  "get_memory",
+  "get_chat_context",
+  "search_chat_history",
+  "current_datetime",
+  "get_system_info",
+  "clipboard_get",
+  "clipboard_set",
+})
+
+#: Tools whose results are auto-captured into GLOBAL memory (bounded per entry
+#: and deduplicated by the memory service), so durable knowledge survives chats.
+AUTO_CAPTURE_TOOLS = frozenset({"fetch_page", "web_search", "read_file", "ask_user"})
+MEMORY_CAPTURE_CHARS = 1_200
+TOOL_CONTEXT_TAIL_BUDGET = 6_000
+TOOL_RESULT_TRIM_CHARS = 600
+
 # Context description appended to the system prompt. The current chat context
 # is injected into the `{context}` placeholder; it replaces the full message
 # history as the model's memory of the conversation.
 CONTEXT_INSTRUCTIONS = """
-You are talking in a persistent chat. You maintain a running summary of the conversation, called the CHAT CONTEXT. It replaces the full message history as your memory.
+You are talking in a persistent chat. You maintain a running CHAT CONTEXT that stands in for the full message history as your memory of the ENTIRE conversation.
 
 CHAT CONTEXT:
 {context}
 
 Use the CHAT CONTEXT above as your memory of everything said earlier in this chat.
 
+The CHAT CONTEXT accumulates, it never replaces: it is the whole conversation in order, e.g. "The chat started with ..., then the user asked about ..., then ...". When you update it you must PRESERVE every earlier topic, fact, request, and answer and append the new exchange at the end. You may compress wording, but never drop earlier content or rewrite it away — never summarize only the latest topic.
+
 The <context>...</context> block is INTERNAL bookkeeping between you and the app — the user never sees it. Never mention, announce, or narrate that you are saving, updating, or maintaining a context or memory; just do it silently and answer the user's question directly.
 
-After EVERY answer, append the COMPLETE updated CHAT CONTEXT as the very LAST part of your reply, wrapped in exactly the lowercase tags <context>...</context>. Nothing else may be inside the tags. Never place the tags anywhere else in the reply and never wrap them in code fences or markdown.
+After EVERY answer, append the COMPLETE updated CHAT CONTEXT (everything so far, in order) as the very LAST part of your reply, wrapped in exactly the lowercase tags <context>...</context>. Nothing else may be inside the tags. Never place the tags anywhere else in the reply and never wrap them in code fences or markdown.
 """
 
 CONTEXT_TAG_RE = re.compile(r"<context>(.*?)</context>", re.DOTALL | re.IGNORECASE)
@@ -78,6 +108,18 @@ def _limit_context(context: str) -> str:
   return context[-MAX_CONTEXT_CHARS:].strip()
 
 
+def _clean_text(text: Optional[str]) -> Optional[str]:
+  """Drop lone surrogates / invalid UTF-16 units before persistence.
+
+  Windows console input and, occasionally, model replies can carry unpaired
+  surrogates; sqlite's UTF-8 driver rejects them on INSERT (``surrogates not
+  allowed``). Valid emoji and all other unicode pass through untouched.
+  """
+  if text is None:
+    return None
+  return text.encode("utf-8", errors="ignore").decode("utf-8", errors="ignore")
+
+
 def _extract_context(answer: str) -> tuple[Optional[str], str]:
   """Split a raw reply into the new chat context and the visible answer.
 
@@ -90,6 +132,126 @@ def _extract_context(answer: str) -> tuple[Optional[str], str]:
   new_context = _limit_context(match.group(1))
   clean = CONTEXT_TAG_RE.sub("", answer).strip()
   return new_context, clean
+
+
+def _merge_contexts(previous: Optional[str], new_context: str) -> str:
+  """Combine the stored context with the model's update without losing history.
+
+  The chat context must accumulate the whole conversation (the model is told
+  ``CHAT CONTEXT accumulates, it never replaces``), but a weak model may still
+  emit only the newest topic. Handling is therefore defensive:
+
+  - No stored context yet → use the update as-is.
+  - The update already contains the full stored context → trust it (replace).
+  - Otherwise the model sent a partial/other-topic slice → append it to the
+    stored context, dropping exact-duplicate lines to bound growth.
+  """
+  previous = (previous or "").strip()
+  new_context = (new_context or "").strip()
+  if not previous:
+    return _limit_context(new_context)
+  if not new_context:
+    return _limit_context(previous)
+  if normalize_content(new_context).find(normalize_content(previous)) != -1:
+    return _limit_context(new_context)
+
+  combined = f"{previous}\n\n{new_context}"
+  seen: set[str] = set()
+  lines: list[str] = []
+  for line in combined.splitlines():
+    key = normalize_content(line)
+    if not key or key in seen:
+      continue
+    seen.add(key)
+    lines.append(line)
+  return _limit_context("\n".join(lines))
+
+
+def _serialize_result(result) -> str:
+  if isinstance(result, dict):
+    return json.dumps(result, ensure_ascii=False, default=str)
+  return str(result)
+
+
+def _synthesize_tool_context(results: list[dict]) -> Optional[str]:
+  """Build a compact "what the model fetched this exchange" section.
+
+  Returned text is appended to the chat context when the model emits no
+  ``<context>`` block, so tool data is never lost between turns.
+  """
+  lines: list[str] = []
+  total = 0
+  for item in results:
+    name = item.get("name")
+    if not name or name in CONTEXT_FOLD_EXCLUDED_TOOLS:
+      continue
+    text = _serialize_result(item.get("result"))[:TOOL_RESULT_TRIM_CHARS].strip()
+    if not text:
+      continue
+    line = f"- {name}: {text}"
+    if lines and total + len(line) + 1 > TOOL_CONTEXT_TAIL_BUDGET:
+      break
+    lines.append(line)
+    total += len(line) + 1
+  if not lines:
+    return None
+  header = "RECENT TOOL RESULTS (facts gathered this exchange — remember and reuse them):"
+  return f"{header}\n" + "\n".join(lines)
+
+
+def _memory_capture_content(name: str, result) -> Optional[str]:
+  """Render one tool result as a durable one-line fact, or ``None`` to skip."""
+  if not isinstance(result, dict):
+    return None
+  if name == "ask_user" and result.get("answer"):
+    return f'The user answered "{result["answer"]}".'
+  if name == "fetch_page" and result.get("text"):
+    return f"Fetched page {result.get('url', '')}: {result['text']}"[:MEMORY_CAPTURE_CHARS]
+  if name == "web_search" and result.get("results"):
+    return (
+      f'Web search "{result.get("query", "")}": '
+      f'{_serialize_result(result["results"])}'
+    )[:MEMORY_CAPTURE_CHARS]
+  if name == "read_file" and result.get("content"):
+    return f"File {result.get('file', '')}: {result['content']}"[:MEMORY_CAPTURE_CHARS]
+  return None
+
+
+def _capture_global_memories(results: list[dict], chat_id: int) -> None:
+  """Auto-save durable tool findings into global memory (opt-out via AUTO_MEMORIZE=0).
+
+  Low-importance ``fact`` entries, truncated and deduplicated by the memory
+  service, so the knowledge survives the current chat. Failures are swallowed —
+  capture must never break a reply.
+  """
+  enabled = (ENV.get("AUTO_MEMORIZE", default="1") or "1").strip().lower()
+  if enabled not in {"1", "true", "yes"}:
+    return
+  for item in results:
+    name = item.get("name")
+    if name not in AUTO_CAPTURE_TOOLS:
+      continue
+    content = _memory_capture_content(name, item.get("result"))
+    if not content:
+      continue
+    content = _clean_text(content)
+    if not content:
+      continue
+    try:
+      MemoryService.create(
+        type_="fact",
+        content=content,
+        importance=1,
+        source_chat_id=chat_id,
+      )
+    except Exception:
+      continue
+
+
+def _tool_results(agent) -> list[dict]:
+  """Safely read the agent's recorded tool results (may be a test stub)."""
+  getter = getattr(agent, "take_tool_results", None)
+  return getter() if callable(getter) else []
 
 
 def _stream_strip_context(
@@ -180,11 +342,24 @@ def _generated_title(message: str) -> tuple[Optional[str], Optional[dict]]:
 def _build_agent(
   system_prompt: Optional[str] = None,
   max_tokens: int = 1024,
+  question_handler: Optional[QuestionHandler] = None,
 ) -> Agent:
+  """Build an agent with the full tool set an interface needs.
+
+  ``question_handler`` is the app's blocking ``(question, options,
+  allow_free_text) -> answer | None`` callback; it backs the ``ask_user`` tool
+  and the user-approval step of ``run_command`` (see ``tools/ask.py``).
+  """
   ENV.init()
   init_db()
+  tools = build_crud_tools() + build_memory_tools()
+  tools += build_files_tools()
+  tools += build_web_tools()
+  tools += build_system_tools()
+  tools += build_ask_tools(question_handler)
+  tools += build_shell_tools(question_handler)
   return Agent(
-    tools=build_crud_tools() + build_memory_tools(),
+    tools=tools,
     system_prompt=system_prompt or SYSTEM_PROMPT,
     max_tokens=max_tokens,
   )
@@ -219,9 +394,10 @@ class Chat:
     title: Optional[str] = None,
     system_prompt: Optional[str] = None,
     max_tokens: int = 1024,
+    question_handler: Optional[QuestionHandler] = None,
   ) -> "Chat":
     """Boot the environment/database, build the agent, start a new chat."""
-    agent = _build_agent(system_prompt, max_tokens)
+    agent = _build_agent(system_prompt, max_tokens, question_handler)
 
     session = get_session()
     try:
@@ -248,9 +424,10 @@ class Chat:
     chat_id: int,
     system_prompt: Optional[str] = None,
     max_tokens: int = 1024,
+    question_handler: Optional[QuestionHandler] = None,
   ) -> "Chat":
     """Resume an existing chat by id (raises ``ValueError`` if unknown)."""
-    agent = _build_agent(system_prompt, max_tokens)
+    agent = _build_agent(system_prompt, max_tokens, question_handler)
 
     session = get_session()
     try:
@@ -404,8 +581,8 @@ class Chat:
     return "\n\n".join(sections)
 
   def _set_context(self, content: str) -> None:
-    """Persist a new (size-limited) chat context summary for this chat."""
-    content = _limit_context(content)
+    """Persist a new (merged, size-limited) chat context summary for this chat."""
+    content = _clean_text(_merge_contexts(self.record.context, content)) or ""
     session = get_session()
     try:
       record = session.get(ChatRecord, self.id)
@@ -418,6 +595,7 @@ class Chat:
     self.record.context = content
 
   def _add_message(self, role: str, content: str) -> None:
+    content = _clean_text(content) or ""
     session = get_session()
     try:
       session.add(MessageRecord(chat_id=self.id, role=role, content=content))
@@ -451,7 +629,7 @@ class Chat:
     if self.record.title or self._titled:
       return
     self._titled = True
-    basis = self._first_user_message(user_message)
+    basis = self._first_user_message(_clean_text(user_message) or "")
     title, usage = _generated_title(basis)
     if usage:
       self._record_usage(usage)
@@ -469,6 +647,7 @@ class Chat:
     LLM call fails, the user message stays persisted but the exception is
     re-raised (no assistant message is saved).
     """
+    user_message = _clean_text(user_message) or ""
     self._add_message("user", user_message)
 
     messages = [
@@ -481,8 +660,14 @@ class Chat:
     self._record_usage(self.agent.take_usage())
 
     new_context, clean = _extract_context(answer)
+    results = _tool_results(self.agent)
     if new_context is not None:
       self._set_context(new_context)
+    else:
+      tail = _synthesize_tool_context(results)
+      if tail:
+        self._set_context(tail)
+    _capture_global_memories(results, self.id)
 
     self._add_message("assistant", clean)
     self._ensure_title(user_message)
@@ -501,6 +686,7 @@ class Chat:
           sys.stdout.write(chunk)
           sys.stdout.flush()
     """
+    user_message = _clean_text(user_message) or ""
     self._add_message("user", user_message)
 
     messages = [
@@ -525,6 +711,12 @@ class Chat:
         if parts:
           self._add_message("assistant", "".join(parts).strip())
         self._record_usage(self.agent.take_usage())
+        results = _tool_results(self.agent)
         if context_out[0] is not None:
           self._set_context(context_out[0])
+        else:
+          tail = _synthesize_tool_context(results)
+          if tail:
+            self._set_context(tail)
+        _capture_global_memories(results, self.id)
         self._ensure_title(user_message)

@@ -106,6 +106,83 @@ def test_agent_run_unknown_tool(monkeypatch):
   assert agent.run([{"role": "user", "content": "go"}]) == "ok"
 
 
+def test_agent_records_tool_results(monkeypatch):
+  monkeypatch.setattr("utils.agent.get_llm", lambda: StubProvider([_tool_round, _final_round]))
+
+  agent = _make_agent()
+  agent.run([{"role": "user", "content": "go"}])
+
+  results = agent.take_tool_results()
+  assert results == [{"name": "do_thing", "result": {"did": "x"}}]
+  # Consumed once; nothing left over for the next call.
+  assert agent.take_tool_results() == []
+
+
+def test_agent_skips_error_tool_results(monkeypatch):
+  def _bad_round(messages, stream):
+    return {
+      "choices": [{
+        "message": {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [{
+            "id": "c",
+            "type": "function",
+            "function": {"name": "do_thing", "arguments": json.dumps({"value": "x"})},
+          }],
+        }
+      }]
+    }
+
+  def _after_bad(messages, stream):
+    return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+
+  class _Exploding(DoThingTool):
+    def execute(self, arguments):
+      return {"error": "nope"}
+
+  monkeypatch.setattr("utils.agent.get_llm", lambda: StubProvider([_bad_round, _after_bad]))
+  agent = Agent(tools=[_Exploding()], system_prompt="system")
+
+  agent.run([{"role": "user", "content": "go"}])
+  assert agent.take_tool_results() == []
+
+
+# ---------------------------------------------------------------------------
+# clean_answer: thinking/reasoning leaks
+# ---------------------------------------------------------------------------
+
+
+def test_clean_answer_strips_thinking_tags():
+  from utils.agent import clean_answer
+
+  raw = "<thinking>\nHmm, let me parse this.\n</thinking>\nThe answer is 42."
+  assert clean_answer(raw) == "The answer is 42."
+
+
+def test_clean_answer_strips_qwen_template_think_answer():
+  from utils.agent import clean_answer
+
+  raw = (
+    "<|im_start|>think\nThe user's last message is 'hi'.\n<|im_start|>answer\n"
+    "Hello there."
+  )
+  assert clean_answer(raw) == "Hello there."
+
+
+def test_clean_answer_strips_bare_thinking_response_preamble():
+  from utils.agent import clean_answer
+
+  raw = " thinking\nThe user is asking about context.\nresponse\nThe chat accumulates."
+  assert clean_answer(raw) == "The chat accumulates."
+
+
+def test_clean_answer_leaves_plain_answers_alone():
+  from utils.agent import clean_answer
+
+  assert clean_answer("Nothing fancy here.") == "Nothing fancy here."
+
+
 # ---------------------------------------------------------------------------
 # Streaming
 # ---------------------------------------------------------------------------

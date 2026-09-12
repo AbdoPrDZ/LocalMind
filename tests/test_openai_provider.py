@@ -11,6 +11,7 @@ from utils.providers.openai import (  # noqa: E402
   OpenAILLMProvider,
   _chat_url,
   _complete_tool_calls,
+  _error_text,
   is_gemini_model,
   iter_stream_chunks,
   merge_delta_tool_calls,
@@ -170,6 +171,52 @@ def test_chat_url_joins_with_and_without_trailing_slash():
     _chat_url("https://generativelanguage.googleapis.com/v1beta/openai/")
     == "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
   )
+
+
+class _FakeResponse:
+  def __init__(self, status_code, text):
+    self.status_code = status_code
+    self.text = text
+
+  def read(self):
+    return self.text.encode("utf-8")
+
+  def iter_lines(self):
+    return []
+
+
+def test_error_text_shows_the_real_joined_url():
+  err = _error_text("https://openrouter.ai/api/v1", 500, "boom")
+  assert "https://openrouter.ai/api/v1/chat/completions" in err
+  # ...never the misleading no-separator form:
+  assert "/api/v1chat" not in err
+
+
+def test_error_text_429_includes_rate_limit_hint():
+  err = _error_text(
+    "https://openrouter.ai/api/v1",
+    429,
+    '{"error":{"message":"Rate limit exceeded: free-models-per-day"}}',
+  )
+  assert "HTTP 429" in err
+  assert "LLM_PROVIDER=local" in err
+  assert "GEMINI_API_KEY" in err
+
+
+def test_provider_reports_429_with_hint(provider, monkeypatch):
+  class _FakeClient429:
+    def post(self, url, **kwargs):
+      assert url == "https://openrouter.ai/api/v1/chat/completions"
+      return _FakeResponse(429, '{"error":{"message":"free-models-per-day"}}')
+
+    def stream(self, method, url, **kwargs):
+      raise AssertionError("stream should not be used for the non-streaming path")
+
+  monkeypatch.setattr(provider, "_client", _FakeClient429())
+  provider.model = "openrouter/free"
+
+  with pytest.raises(RuntimeError, match="free-models-per-day"):
+    provider.create_chat_completion([{"role": "user", "content": "hi"}], max_tokens=16)
 
 
 def test_merge_delta_tool_calls_multiple_indexes():

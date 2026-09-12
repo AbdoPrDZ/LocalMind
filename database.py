@@ -37,6 +37,7 @@ def init_db() -> None:
     chat,
     memory,
     message,
+    note,
     project,
     settings,
     task,

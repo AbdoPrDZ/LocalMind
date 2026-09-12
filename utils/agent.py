@@ -38,25 +38,44 @@ def parse_tool_calls(content: Optional[str]) -> list[dict]:
 
 
 def clean_answer(content: Optional[str]) -> str:
-    """Remove Qwen3 thinking/reasoning blocks and return the final answer."""
+    """Remove Qwen3 thinking/reasoning blocks and return the final answer.
 
+    Handles the common reasoning formats a model may place in front of the
+    actual reply before it reaches the user:
+
+    - `<thinking>...</thinking>` blocks
+    - the bare ``thinking ... response`` preamble
+    - Qwen3 template segments (`<|im_start|>think ... <|im_start|>answer`)
+    - a standalone ``response`` marker line
+    """
     content = (content or "").strip()
 
-    # Remove <think>...</think> blocks.
-    # DOTALL allows the thinking section to span multiple lines.
     content = re.sub(
-        r"<think>.*?</think>",
-        "",
-        content,
-        flags=re.DOTALL | re.IGNORECASE,
+      r"<thinking>.*?</thinking>",
+      "",
+      content,
+      flags=re.DOTALL | re.IGNORECASE,
     )
 
-    # Fallback for models/templates that use a `response` marker.
     content = re.sub(
-        r"^\s*response\s*$",
-        "",
-        content,
-        flags=re.MULTILINE | re.IGNORECASE,
+      r"<\|im_start\|>think.*?<\|im_start\|>answer",
+      "",
+      content,
+      flags=re.DOTALL | re.IGNORECASE,
+    )
+
+    content = re.sub(
+      r"(?:\A|^)thinking.*?response",
+      "",
+      content,
+      flags=re.DOTALL | re.IGNORECASE,
+    )
+
+    content = re.sub(
+      r"^\s*response\s*$",
+      "",
+      content,
+      flags=re.MULTILINE | re.IGNORECASE,
     )
 
     return content.strip()
@@ -74,6 +93,24 @@ class Agent:
     self.system_prompt = system_prompt
     self.max_tokens = max_tokens
     self.usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    self.tool_results: list[dict] = []
+
+  def _record_tool_result(self, name: str, result) -> None:
+    """Remember a successful tool result for this send.
+
+    The Chat service folds these into the running chat context and global
+    memory, so data gathered through tools survives across turns even when the
+    model emits no ``<context>`` block of its own.
+    """
+    if isinstance(result, dict) and result.get("error"):
+      return
+    self.tool_results.append({"name": name, "result": result})
+
+  def take_tool_results(self) -> list[dict]:
+    """Return the tool results recorded during the last run and reset them."""
+    results = self.tool_results
+    self.tool_results = []
+    return results
 
   def _accumulate_usage(self, usage) -> None:
     """Add a provider ``usage`` dict to the running totals for this send."""
@@ -100,6 +137,8 @@ class Agent:
     its own previous calls on every step.
     """
     llm = get_llm()
+
+    self.tool_results = []
 
     while True:
       response = llm.create_chat_completion(
@@ -141,6 +180,8 @@ class Agent:
         else:
           result = tool.call(arguments)
 
+        self._record_tool_result(name, result)
+
         # OpenAI-style tool response. `name` lets remote providers pair the
         # result with the right function; `tool_call_id` grounds native calls.
         messages.append({
@@ -167,6 +208,7 @@ class Agent:
     llm = get_llm()
 
     messages = list(messages)
+    self.tool_results = []
 
     while True:
       stream = llm.create_chat_completion(
@@ -249,6 +291,8 @@ class Agent:
           result = {"error": f"Unknown tool: {name}"}
         else:
           result = tool.call(arguments)
+
+        self._record_tool_result(name, result)
 
         messages.append({
           "role": "tool",

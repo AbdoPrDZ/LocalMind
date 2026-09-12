@@ -24,18 +24,32 @@ own argparse sees just its arguments.
 4. Model may reply with tool calls (native or Qwen3 `<tool_call>` XML blocks) —
    CRUD tools (`create_*`, `list_*`, …) and memory tools
    (`search_global_memory`, `save_memory`, `get_chat_context`,
-   `search_chat_history`, `get_memory`).
+   `search_chat_history`, `get_memory`), plus the scoped tools:
+   files (`read_file`/`write_file`/`list_dir`, `place`-scoped),
+   web (`web_search`/`fetch_page`, keyless), system (`current_datetime`,
+   `get_system_info`, clipboard), `ask_user` and `run_command`.
 5. Agent executes each call, appends a `tool` role message with JSON results.
+   `ask_user` and `run_command` **block**: they hand a question to the app's
+   question handler and wait — the user's answer (or approval/cancel) decides
+   the tool result. A missing handler or dismissed prompt returns an error to
+   the model, never a crash.
 6. Loop until the model returns a plain-text answer; `clean_answer()` strips the
-   `thinking` preamble.
-7. If the reply contains a `<context>...</context>` block, `_extract_context()`
-   saves the new summary as the chat context and removes the tags; the cleaned
-   assistant reply is saved and returned.
+   `thinking` preamble (and `<thinking>...</thinking>` / template leaks).
+7. Context persistence: if the reply contains a `<context>...</context>` block,
+   `_extract_context()` extracts it and `_set_context()` merges it into the
+   stored chat context (`_merge_contexts` — accumulates, never replaces). When
+   the model sends no block, the agent's recorded `tool_results` are folded in
+   instead (`_synthesize_tool_context`), and durable findings (`fetch_page`,
+   `web_search`, `read_file`, `ask_user`) are auto-captured as low-importance
+   global facts (`_capture_global_memories`). The cleaned assistant reply is
+   then saved and returned.
 
 Memory workflow: the global-context snapshot primes the model; when it needs
 more it calls `search_global_memory` → optionally `get_chat_context(source
 chat)` or `search_chat_history`; durable findings are stored via `save_memory`
-(duplicate-guarded, provenance `source_chat_id`).
+(duplicate-guarded, provenance `source_chat_id`) — and, since this release,
+tool results are also captured automatically so nothing the model fetched once
+is lost if it forgets to save it.
 
 Streaming variant: `chat.send_stream(text)` calls `Agent.run_stream()`; the
 answer is yielded token-by-token (only text after the `response` marker for
@@ -64,6 +78,10 @@ plus global summary first, then closes. Full history is available via
   is not forwarded to the assistant. Commands that need a chat (`/usage`,
   `/context`, `/global`, `/tools`) print a hint until the first message
   exists; `/chats`, `/settings`, `/select ...`, `/h`, `/q` work chat-less.
+- The question handler is `_ask_value` (questionary `select` when the tool
+  passes `options`, else a free-text prompt; aborted prompts return `None`).
+  Every `Chat.create()`/`Chat.load()` call passes it, so `ask_user` and the
+  `run_command` approval dialogs work in interactive and single-shot mode.
 - Slash commands (interactive): `/h`/`/help` help, `/q`/`/quit` end, `/usage`
   show usage summary, `/context` show the chat context, `/g`/`/gc`/`/global`
   show the global-memory snapshot (`build_global_context`), `/chats` list

@@ -7,4 +7,5 @@ pydantic
 python-dotenv
 dotenv
 questionary
+tzdata
 pytest

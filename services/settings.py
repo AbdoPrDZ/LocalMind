@@ -30,6 +30,8 @@ def _model_env(provider: str) -> str:
     return "GEMINI_MODEL"
   if provider == "openai":
     return "OPENAI_MODEL"
+  if provider == "free":
+    return "FREE_MODEL"
   return "MODEL_NAME"
 
 
@@ -114,4 +116,8 @@ def resolve_model(provider: str) -> str:
     return ENV.get("GEMINI_MODEL", default=DEFAULT_GEMINI_MODEL)
   if provider == "openai":
     return ENV.get("OPENAI_MODEL", default=DEFAULT_OPENAI_MODEL)
+  if provider == "free":
+    from utils.providers.free import DEFAULT_FREE_MODEL
+
+    return ENV.get("FREE_MODEL", default=DEFAULT_FREE_MODEL)
   return ENV.get("MODEL_NAME", default="unknown")

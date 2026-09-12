@@ -46,6 +46,11 @@ LLM can never tamper with its own history; only `Chat.send()` writes them. The
 `chats.context` column holds the running conversation summary used instead of
 the full history (see `api.md`).
 
+`notes` (`models/note.py`) is a full-CRUD example of an LLM-facing store
+(title, content, tags, created/updated by `utils.time.utcnow`); it is served by
+the same generic tools as every registered model, proving that adding a product
+feature means adding a model — not a tool.
+
 ## Global memory (`models/memory.py`)
 
 `Memory` (table `memories`) persists cross-chat knowledge: `type`

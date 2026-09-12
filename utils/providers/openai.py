@@ -95,6 +95,19 @@ def _chat_url(base_url: str) -> str:
   return f"{base_url.rstrip('/')}/chat/completions"
 
 
+def _error_text(base_url: str, status_code: int, body: str) -> str:
+  """Human message for a failed request (shows the real joined URL)."""
+  message = f"{_chat_url(base_url)} failed with HTTP {status_code}: {body}"
+  if status_code == 429:
+    message += (
+      " | Rate limited (HTTP 429): the free-router daily quota is likely "
+      "exhausted. Wait for the daily reset, add credits, or switch provider "
+      "(`LLM_PROVIDER=local` for the offline model, or `gemini` with "
+      "`GEMINI_API_KEY` set)."
+    )
+  return message
+
+
 def iter_stream_chunks(lines: Iterable[str]) -> Iterator[dict]:
   """Parse raw SSE ``data:`` lines into normalized OpenAI-style chunks.
 
@@ -227,9 +240,7 @@ class OpenAILLMProvider(LLMProvider):
 
     if response.status_code != 200:
       body = response.text[:500]
-      raise RuntimeError(
-        f"{base_url}chat/completions failed with HTTP {response.status_code}: {body}"
-      )
+      raise RuntimeError(_error_text(base_url, response.status_code, body))
 
     return response.json()
 
@@ -248,9 +259,7 @@ class OpenAILLMProvider(LLMProvider):
     ) as response:
       if response.status_code != 200:
         body = response.read().decode("utf-8", errors="replace")[:500]
-        raise RuntimeError(
-          f"{base_url}chat/completions failed with HTTP {response.status_code}: {body}"
-        )
+        raise RuntimeError(_error_text(base_url, response.status_code, body))
       yield from iter_stream_chunks(response.iter_lines())
 
   def create_chat_completion(

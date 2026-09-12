@@ -14,6 +14,41 @@ from utils.providers.gemini import (  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
+# SDK noise suppression
+# ---------------------------------------------------------------------------
+
+
+def test_gemini_provider_silences_sdk_afc_notice():
+  import logging
+
+  logger = logging.getLogger("google_genai.models")
+  filters = [f for f in logger.filters if isinstance(f, logging.Filter) and "AfcNotice" in type(f).__name__]
+  assert filters, "the AFC-notice filter is not installed on google_genai.models"
+
+  record = logging.LogRecord(
+    "google_genai.models",
+    logging.WARNING,
+    "models.py",
+    6419,
+    "Direct use of automatic function calling (AFC) in Models.generate_content is not recommended.",
+    (),
+    None,
+  )
+  assert not any(f.filter(record) for f in filters)
+
+  keep = logging.LogRecord(
+    "google_genai.models",
+    logging.WARNING,
+    "models.py",
+    1,
+    "Real warning that must pass through.",
+    (),
+    None,
+  )
+  assert all(f.filter(keep) for f in filters)
+
+
+# ---------------------------------------------------------------------------
 # Schema conversion (pure helper)
 # ---------------------------------------------------------------------------
 
