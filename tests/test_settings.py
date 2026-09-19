@@ -150,6 +150,25 @@ def test_select_model_local_missing_model(db, monkeypatch, tmp_path):
   assert SettingsService.get_provider() is None
 
 
+def test_select_model_zen_missing_key(db, monkeypatch):
+  from apps.cmd.main import _select_model
+
+  monkeypatch.delenv("LLM_OPENCODE_API_KEY", raising=False)
+  monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
+  error = _select_model("zen", "deepseek-v4-flash-free")
+  assert "LLM_OPENCODE_API_KEY" in error
+  assert SettingsService.get_provider() is None
+
+
+def test_select_model_zen_success(db, monkeypatch):
+  from apps.cmd.main import _select_model
+
+  monkeypatch.setenv("LLM_OPENCODE_API_KEY", "zen-key-123")
+  assert _select_model("zen", "deepseek-v4-flash-free") is None
+  assert SettingsService.get_provider() == "zen"
+  assert SettingsService.get_model("zen") == "deepseek-v4-flash-free"
+
+
 # ---------------------------------------------------------------------------
 # /settings output and /select chat dispatch
 # ---------------------------------------------------------------------------

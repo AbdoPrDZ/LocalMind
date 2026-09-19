@@ -9,7 +9,7 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field
 
 from services.memory import MemoryService
-from utils.tool import Tool
+from utils.tool import Tool, tool_error
 
 
 class _SearchGlobalMemoryInput(BaseModel):
@@ -48,7 +48,9 @@ class GetMemoryTool(Tool):
 
   def execute(self, arguments: dict[str, Any]) -> Any:
     memory = MemoryService.get(arguments["memory_id"])
-    return memory if memory is not None else {"error": "Memory not found"}
+    if memory is None:
+      return tool_error("not_found", "Memory not found")
+    return memory
 
 
 class _GetChatContextInput(BaseModel):
@@ -67,7 +69,7 @@ class GetChatContextTool(Tool):
   def execute(self, arguments: dict[str, Any]) -> Any:
     context = MemoryService.get_chat_context(arguments["chat_id"])
     if context is None:
-      return {"error": "Chat not found"}
+      return tool_error("not_found", "Chat not found")
     return {"chat_id": arguments["chat_id"], "context": context}
 
 
@@ -144,7 +146,42 @@ class SaveMemoryTool(Tool):
         return {"warning": "A similar memory already exists.", "memory": result["memory"]}
       return {"success": True, "memory": result}
     except ValueError as exc:
-      return {"error": str(exc)}
+      return tool_error("invalid_input", str(exc))
+
+
+class _ForgetMemoryInput(BaseModel):
+  memory_id: Optional[int] = Field(
+    default=None,
+    description="Primary key of the memory to archive.",
+  )
+  query: Optional[str] = Field(
+    default=None,
+    description="Alternative to memory_id: forget entries matching this query.",
+  )
+
+
+class ForgetMemoryTool(Tool):
+  name = "forget_memory"
+  description = (
+    "Archive a global memory entry so it no longer appears in active retrieval. "
+    "Provide memory_id (from search_global_memory results) or a query to forget "
+    "everything matching. Use when the user says a memory is wrong or outdated."
+  )
+  input_model = _ForgetMemoryInput
+
+  def execute(self, arguments: dict[str, Any]) -> Any:
+    memory_id = arguments.get("memory_id")
+    query = arguments.get("query")
+    if memory_id is not None:
+      if MemoryService.forget(memory_id):
+        return {"success": True, "forgotten": [MemoryService.get(memory_id)]}
+      return tool_error("not_found", f"Memory {memory_id} not found")
+    if query:
+      archived = MemoryService.forget_by_query(query)
+      if not archived:
+        return {"warning": f"No active memories matched {query!r}."}
+      return {"success": True, "forgotten": archived}
+    return tool_error("invalid_input", "Provide memory_id or query.")
 
 
 def build_memory_tools() -> list[Tool]:
@@ -155,4 +192,5 @@ def build_memory_tools() -> list[Tool]:
     GetChatContextTool(),
     SearchChatHistoryTool(),
     SaveMemoryTool(),
+    ForgetMemoryTool(),
   ]

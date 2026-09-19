@@ -97,7 +97,10 @@ def test_agent_run_unknown_tool(monkeypatch):
   def _after_unknown(messages, stream):
     last = messages[-1]
     assert last["role"] == "tool"
-    assert json.loads(last["content"]) == {"error": "Unknown tool: nope"}
+    payload = json.loads(last["content"])
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "unknown_tool"
+    assert payload["error"]["retryable"] is False
     return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
 
   monkeypatch.setattr("utils.agent.get_llm", lambda: StubProvider([_unknown_round, _after_unknown]))
@@ -146,6 +149,63 @@ def test_agent_skips_error_tool_results(monkeypatch):
 
   agent.run([{"role": "user", "content": "go"}])
   assert agent.take_tool_results() == []
+
+
+# ---------------------------------------------------------------------------
+# Loop guardrails (Phase 4)
+# ---------------------------------------------------------------------------
+
+
+from utils.agent import MAX_TOOL_RESULT_CHARS, LOOP_LIMIT_ANSWER  # noqa: E402
+
+
+def test_agent_stops_after_max_steps(monkeypatch):
+  monkeypatch.setattr("utils.agent.get_llm", lambda: StubProvider([_tool_round] * 10))
+  monkeypatch.setattr("utils.agent._max_agent_steps", lambda: 3)
+
+  agent = _make_agent()
+  assert agent.run([{"role": "user", "content": "go"}]) == LOOP_LIMIT_ANSWER
+
+
+def test_agent_aborts_repeated_identical_calls(monkeypatch):
+  monkeypatch.setattr("utils.agent.get_llm", lambda: StubProvider([_tool_round] * 10))
+
+  agent = _make_agent()
+  assert agent.run([{"role": "user", "content": "go"}]) == LOOP_LIMIT_ANSWER
+
+
+def test_agent_bounds_tool_result_serialization(monkeypatch):
+  class _BigReturn(DoThingTool):
+    def execute(self, arguments):
+      return {"big": "x" * 10_000}
+
+  def _big_round(messages, stream):
+    return {
+      "choices": [{
+        "message": {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [{
+            "id": "c",
+            "type": "function",
+            "function": {"name": "do_thing", "arguments": json.dumps({"value": "x"})},
+          }],
+        }
+      }]
+    }
+
+  def _after_big(messages, stream):
+    last = messages[-1]
+    assert last["role"] == "tool"
+    content = last["content"]
+    assert content.endswith("...[truncated]")
+    assert len(content) <= MAX_TOOL_RESULT_CHARS + 64
+    assert "x" * 9000 not in content
+    return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+
+  monkeypatch.setattr("utils.agent.get_llm", lambda: StubProvider([_big_round, _after_big]))
+  agent = Agent(tools=[_BigReturn()], system_prompt="system")
+  assert agent.run([{"role": "user", "content": "go"}]) == "ok"
 
 
 # ---------------------------------------------------------------------------

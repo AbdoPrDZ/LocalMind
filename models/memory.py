@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, SmallInteger, String, Text
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, SmallInteger, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from utils.model import BaseModel
@@ -21,11 +21,24 @@ class Memory(BaseModel):
   type: Mapped[str] = mapped_column(String(20), index=True)
   content: Mapped[str] = mapped_column(Text)
   importance: Mapped[int] = mapped_column(SmallInteger, default=2)
+  confidence: Mapped[float] = mapped_column(Float, default=0.5)
+  status: Mapped[str] = mapped_column(String(20), default="active", index=True)
+  superseded_by: Mapped[int | None] = mapped_column(
+    ForeignKey("memories.id"),
+    nullable=True,
+  )
   source_chat_id: Mapped[int | None] = mapped_column(
     ForeignKey("chats.id"),
     nullable=True,
     index=True,
   )
+  source_message_id: Mapped[int | None] = mapped_column(
+    ForeignKey("messages.id"),
+    nullable=True,
+    index=True,
+  )
+  last_accessed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+  access_count: Mapped[int] = mapped_column(Integer, default=0)
   created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
   updated_at: Mapped[datetime] = mapped_column(
     DateTime,

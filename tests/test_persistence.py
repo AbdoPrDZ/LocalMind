@@ -22,6 +22,11 @@ class _FetchInput(BaseModel):
   url: str
 
 
+class _ReadInput(BaseModel):
+  file: str
+  place: str = "workspace"
+
+
 class _FakeFetchTool(Tool):
   name = "fetch_page"
   description = "fetch a page"
@@ -34,6 +39,18 @@ class _FakeFetchTool(Tool):
         "AbdoPrDZ — Abderrahmane GUERGUER, Algeria-Ghardaia-Berriane, "
         "74 repositories, 13 stars."
       ),
+    }
+
+
+class _FakeReadFileTool(Tool):
+  name = "read_file"
+  description = "read a file"
+  input_model = _ReadInput
+
+  def execute(self, arguments):
+    return {
+      "file": "notes.md",
+      "content": "LocalMind uses SQLite for persistence and GEN-123 for memory.",
     }
 
 
@@ -70,13 +87,31 @@ def _tool_round(messages, stream):
   }
 
 
+def _read_file_round(messages, stream):
+  return {
+    "choices": [{"message": {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [{
+        "id": "c1",
+        "type": "function",
+        "function": {
+          "name": "read_file",
+          "arguments": json.dumps({"file": "notes.md", "place": "workspace"}),
+        },
+      }],
+    }}],
+    "usage": {},
+  }
+
+
 def _plain_round(text):
   def _round(messages, stream):
     return {"choices": [{"message": {"role": "assistant", "content": text}}], "usage": {}}
   return _round
 
 
-def _make_chat(db) -> "Chat":
+def _make_chat(db, tools=None) -> "Chat":
   from apps.base import Chat
 
   session = get_session()
@@ -86,7 +121,7 @@ def _make_chat(db) -> "Chat":
   session.refresh(record)
   session.expunge(record)
   session.close()
-  agent = Agent(tools=[_FakeFetchTool()], system_prompt="system")
+  agent = Agent(tools=tools or [_FakeFetchTool()], system_prompt="system")
   return Chat(record, agent, usage_session_id=None)
 
 
@@ -130,17 +165,32 @@ def test_tool_data_carries_into_next_turn(db, monkeypatch):
 
 
 def test_tool_facts_are_captured_into_global_memory(db, monkeypatch):
+  monkeypatch.setattr("utils.agent.get_llm", lambda: _FakeLLM([_read_file_round, _plain_round("ok")]))
+
+  chat = _make_chat(db, tools=[_FakeReadFileTool()])
+  chat.send("read the notes file")
+
+  memories = MemoryService.list(limit=20)
+  captured = [m for m in memories if m["content"].startswith("File notes.md:")]
+  assert captured, f"no auto-captured memory, got {memories}"
+  assert "SQLite" in captured[0]["content"]
+  assert captured[0]["source_chat_id"] == chat.id
+  assert captured[0]["importance"] == 1
+
+
+def test_web_results_not_auto_captured_into_global_memory(db, monkeypatch):
   monkeypatch.setattr("utils.agent.get_llm", lambda: _FakeLLM([_tool_round, _plain_round("ok")]))
 
+  before = MemoryService.list(limit=50)
   chat = _make_chat(db)
   chat.send("look at my github profile")
 
-  memories = MemoryService.list(limit=20)
-  captured = [m for m in memories if m["content"].startswith("Fetched page https://github.com/AbdoPrDZ:")]
-  assert captured, f"no auto-captured memory, got {memories}"
-  assert "GUERGUER" in captured[0]["content"]
-  assert captured[0]["source_chat_id"] == chat.id
-  assert captured[0]["importance"] == 1
+  after = MemoryService.list(limit=50)
+  assert len(after) == len(before)
+  assert not any(
+    m["content"].startswith("Fetched page https://github.com/AbdoPrDZ:")
+    for m in after
+  )
 
 
 def test_auto_capture_can_be_disabled(db, monkeypatch):

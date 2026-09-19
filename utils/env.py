@@ -20,6 +20,7 @@ ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 DEFAULT_OPENAI_MODEL = "openrouter/free"
 DEFAULT_OPENAI_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+DEFAULT_ZEN_BASE_URL = "https://opencode.ai/zen/v1"
 
 
 class ENV:

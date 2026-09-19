@@ -85,17 +85,20 @@ longer erases the conversation.
   agent's recorded `tool_results`: `_synthesize_tool_context()` folds them into
   a "RECENT TOOL RESULTS" section (skipping memory/system/clipboard reads,
   ~6000-char budget) saved as the new context — tool knowledge is not lost on
-  turns where the model skips the tags. Durable tools (`fetch_page`,
-  `web_search`, `read_file`, `ask_user`) are additionally auto-captured as
-  low-importance global facts by `_capture_global_memories()` (content truncated
-  to 1200 chars, deduplicated by the memory service; `AUTO_MEMORIZE=1` in
-  `.env`, `0` disables; failures swallowed) so findings survive into other chats.
+  turns where the model skips the tags. Durable tools (`read_file`, `ask_user`
+  only — `fetch_page`/`web_search` results are deliberately NOT captured) are
+  additionally auto-captured as low-importance global facts by
+  `_capture_global_memories()` (content truncated to 1200 chars, deduplicated by
+  the memory service; `AUTO_MEMORIZE=1` in `.env`, `0` disables; failures
+  swallowed) with the triggering user message recorded as `source_message_id`.
 - Failed/interrupted inference persists the user message but saves no assistant
   reply or context update.
-- `_system_prompt()` injects a **bounded global context** snapshot (see below)
-  between the base system prompt and the chat-context instructions, plus a
-  `CURRENT CHAT ID:` line so the LLM can populate `source_chat_id` on
-  `save_memory` calls.
+- The prompt is assembled by the **ContextEngine** (`services/context/`):
+  `_engine_messages(user_message)` builds a `system` message (base prompt +
+  query-aware relevant global memories + CHAT STATE + protocol instructions) and
+  the most recent verbatim turns as user/assistant messages, packed to the token
+  budget derived from `LLM_LOCAL_CONTEXT_WINDOW` (output reserve
+  `agent.max_tokens`/1024). `_system_prompt()` is legacy/unused by `send()`.
 - `resources/SYSTEM_PROMPT.md` likewise instructs the model that memory saves
   and context updates are silent — never announced to the user, and durable
   profile/world facts should be saved with `save_memory`.
@@ -132,9 +135,15 @@ full history):
   and bare `thinking`/`response` marker lines (case-insensitive) so reasoning
   never leaks into the visible answer.
 - Records every executed tool result: `self.tool_results` (reset at the start
-  of each `run`/`run_stream`, skipping results whose top level is an `"error"`
-  dict); `take_tool_results()` returns-and-clears so `Chat.send()` can persist
-  them without re-triggering.
+  of each `run`/`run_stream`, skipping results with an `"error"` top key or a
+  structured `ok: False` error envelope); `take_tool_results()` returns-and-clears
+  so `Chat.send()` can persist them without re-triggering.
+- Guardrails: the loop stops after `MAX_AGENT_STEPS` iterations (default 8, env
+  `MAX_AGENT_STEPS`), a repeated identical `name+arguments` call (3×) aborts with
+  `LOOP_LIMIT_ANSWER`, and each tool result serialized back to the model is
+  bounded to `MAX_TOOL_RESULT_CHARS` (6000) with a truncation marker.
+- Unknown tools return a structured error envelope
+  `{"ok": false, "error": {"code", "message", "retryable"}}` (`utils.tool.tool_error`).
 - Loop ends when the model replies with plain text.
 
 ## Tool (`utils/tool.py`)
@@ -145,13 +154,16 @@ ABC for all tools. Each tool declares:
 - `schema()` — OpenAI-style function schema from `model_json_schema()`.
 - `call(arguments)` — validates via the input model, then executes.
 - `execute(arguments) -> Any` — implemented by subclasses.
+- `tool_error(code, message, retryable)` — structured error envelope helper.
 
 ## Tool builders (`tools/`)
 
 `_build_agent` assembles every tool call in `apps/base.py`:
 
 - `build_crud_tools()` — generic per-model CRUD (`tools/model.py`).
-- `build_memory_tools()` — the five memory tools (`tools/memory.py`).
+- `build_memory_tools()` — the six memory tools (`tools/memory.py`):
+  `search_global_memory`, `get_memory`, `get_chat_context`,
+  `search_chat_history`, `save_memory`, `forget_memory`.
 - `build_files_tools()` — `read_file`/`write_file`/`list_dir` scoped to the
   `ALLOWED_PLACES` folders (`tools/files.py`); each schema's `place` field is
   a `Literal` of configured place names and every resolved path is
@@ -174,7 +186,7 @@ ABC for all tools. Each tool declares:
 `SettingsService.apply_to_env()`; `reset_llm()` clears the singleton so the
 next call rebuilds it with a new selection. The provider is selected by
 `LLM_PROVIDER` in `.env` (overridden by the `settings` table when set):
-`local`, `gemini`, `openai`, or `free`. Providers live in `utils/providers/`
+`local`, `gemini`, `openai`, `free`, or `zen`. Providers live in `utils/providers/`
 and each exposes the same OpenAI-style `create_chat_completion(messages, tools,
 max_tokens, stream)` API (dict result / iterator of dict chunks), so the agent
 is backend-agnostic.
@@ -223,8 +235,28 @@ is backend-agnostic.
   `_notice_error(...)` if the endpoint still advertises — a polluted reply is
   never surfaced to the user. Streaming is buffered through the guard, so
   streamed output is validated before it is replayed as chunks.
+- `ZenLLMProvider` — OpenCode Zen gateway
+  (`utils/providers/zen.py`, `LLM_PROVIDER=zen`): a thin subclass of
+  `OpenAILLMProvider` pointing the same HTTP/SSE machinery at
+  `https://opencode.ai/zen/v1` (default; `LLM_ZEN_BASE_URL` overrides) with one
+  API key (`LLM_OPENCODE_API_KEY`, fallback `OPENCODE_API_KEY`;
+  `LLM_ZEN_MODEL`, default `DEFAULT_ZEN_MODEL` `deepseek-v4-flash-free`, a free
+  tier; ids from https://opencode.ai/zen/v1/models). `_endpoint()` always
+  returns the Zen base url/key — no `gemini-` special-casing — and raises a
+  friendly `ValueError` when the key is missing. Native `tool_calls`, SSE
+  streaming and error formatting are inherited unchanged; `stream_marker` is
+  `None`. Not every catalog family works: the `gpt-*` Responses-API models and
+  native Anthropic/Google endpoints aren't served through
+  `/v1/chat/completions`. Zen requires an `x-opencode-session` header on every
+  request; the provider sends it when `LLM_ZEN_SESSION_ID` (or
+  `OPENCODE_SESSION_ID`) is set — a real OpenCode session id also unlocks the
+  **free-tier ids** (`*-free`, `big-pickle`, ...) outside the OpenCode app.
+  When free-tier is rejected anyway, `_explain()` detects those bodies
+  (`MissingSessionID`/unavailable) and appends actionable guidance.
+  Usage tokens count; cost is estimated only for `gemini-*` ids (Zen prices
+  match LocalMind's Gemini table, no markup).
 
-Note that when `LLM_PROVIDER=gemini` (or `openai`/`free`), `ENV.init()` only
+Note that when `LLM_PROVIDER=gemini` (or `openai`/`free`/`zen`), `ENV.init()` only
 requires `DATABASE_URL` (plus the provider's own settings) —
 `LLM_LOCAL_MODELS_DIR`/`LLM_LOCAL_MODEL_NAME` are optional. Stream-mode
 text/tool-call output is normalized per provider in `utils/agent.py`
@@ -240,30 +272,59 @@ text/tool-call output is normalized per provider in `utils/agent.py`
 - `resolve_model(provider)` — settings override else `LLM_GEMINI_MODEL` for
   gemini (default `DEFAULT_GEMINI_MODEL`), `LLM_OPENAI_MODEL` for openai
   (default `openrouter/free`), `LLM_FREE_MODEL` for free (default
-  `DEFAULT_FREE_MODEL`), or `LLM_LOCAL_MODEL_NAME` for local.
+  `DEFAULT_FREE_MODEL`), `LLM_ZEN_MODEL` for zen (default `DEFAULT_ZEN_MODEL`),
+  or `LLM_LOCAL_MODEL_NAME` for local.
   Model env var mapping lives in `_model_env(provider)`.
 - `Chat.create()`/`Chat.load()` open usage sessions with the resolved
   provider/model; the cmd app validates and persists a new choice via
   `/select model` (see `workflows.md`).
 
+## Context engine (`services/context/`)
+
+Assembly of what the model actually sees each turn, decoupled from persistence
+(`chats.state` JSON):
+
+- `engine.py` `ContextEngine(chat, memories, prefer_history=False)` — builds a
+  `ContextPackage` (system/user/assistant messages) at `build(send_extra)`
+  under a `token_budget`, and offers `debug()` for the `/context` debugger.
+- `budget.py` — converts the model context window + output reserve into the
+  system/turn budgets (per-turn char allowances, `summarized_len` vs
+  `verbatim_len`).
+- `state.py` — parse/merge/serialize/summarize of the structured chat state
+  (`topics`, `summary`, `pending`); `summarize_for_tokens`.
+- `retrieval.py` + `ranking.py` — retrieve old-chat snippets (via
+  `search_chat_history`) and global memories relevant to the new message.
+- `formatter.py` — renders topics/summary to compact text; `CURRENT CHAT ID`
+  header is included here. The legacy snapshot path
+  (`services/global_context.py::build_global_context`) remains for `/global`
+  display only.
+
 ## Global memory (`services/`, `tools/memory.py`)
 
 Cross-chat persistence as a second layer under the existing chat context:
 
-- `MemoryService` (`services/memory.py`) — `create` (with duplicate guard:
-  normalized-content match before insert), `get/update/delete`, `search` (LIKE
-  over content/type, ranked by importance), `list`, `get_chat_context(chat_id)`,
-  `search_chat_history(query, chat_id?, limit)`. No vector DB, no business-domain
-  coupling.
+- `MemoryService` (`services/memory.py`) —
+  `create` (duplicate guard + boilerplate-aware subject supersession),
+  `get`, `update` (does NOT supersede — keep that signal for `conflicts()`),
+  `archive` via `forget(id)`/`forget_by_query(q)`, `search` (FTS5 candidates
+  when the `memories_fts` index exists and `database.is_fts_available()`, ilike
+  fallback otherwise; both re-ranked by keyword overlap × importance ×
+  confidence and bump `access_count`/`last_accessed_at`),
+  `list(status=active)`, `get_chat_context(chat_id)`,
+  `search_chat_history(query, chat_id?, limit)` (matched for the engine),
+  `conflicts()`, `stale(days)` (inspection for `/global conflicts|stale`).
+  No vector DB, no business-domain coupling.
 - Memory tools (`tools/memory.py`) — `search_global_memory`, `get_memory`,
-  `get_chat_context`, `search_chat_history`, `save_memory`. Registered alongside
-  CRUD tools in `_build_agent()`. The LLM never touches the DB directly
-  (tool → `MemoryService` → SQLAlchemy only).
+  `get_chat_context`, `search_chat_history`, `save_memory`, `forget_memory`;
+  failures are returned as `tool_error(...)` envelopes (never exceptions).
+  Registered alongside CRUD tools in `_build_agent()`. The LLM never touches the
+  DB directly (tool → `MemoryService` → SQLAlchemy only).
 - `services/global_context.py::build_global_context()` — builds a small
   prompt-friendly snapshot (`GLOBAL_CONTEXT_MAX_CHARS` 4000,
   `GLOBAL_CONTEXT_MAX_ENTRIES` 12): top-N most important memories grouped by type
   (preferences/decisions/topics/facts), with an optional `CURRENT CHAT ID`
-  header. The full memory table is never injected into a prompt.
+  header. Retained for the `/global` display; the engine performs its own
+  query-aware retrieval.
 - `models/memory.py` — the `Memory` ORM row; **not** in the CRUD registry
   (see `database.md`).
 

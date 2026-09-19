@@ -4,6 +4,18 @@ from typing import Any
 from pydantic import BaseModel
 
 
+def tool_error(code: str, message: str, retryable: bool = False) -> dict:
+  """Structured error envelope so the model can decide whether to retry."""
+  return {
+    "ok": False,
+    "error": {
+      "code": code,
+      "message": message,
+      "retryable": retryable,
+    },
+  }
+
+
 class Tool(ABC):
 
   name: str

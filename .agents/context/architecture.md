@@ -30,9 +30,14 @@ tools        (tools/model.py)  generic CRUD tools generated from registry
     │        (tools/shell.py)   run_command — user-approval gated
     │        (tools/ask.py)     ask_user — generic, per-app question handler
     │
-services     (services/memory.py) MemoryService; global-context builder
-             (services/usage.py)  UsageService; token/cost accounting per session
-             (services/settings.py) SettingsService; runtime provider/model
+services     (services/context/)  ContextEngine: token-budgeted prompt assembly
+                                   (recent turns + structured chat state +
+                                   query-aware global memory / old-chat history)
+              (services/memory.py) MemoryService; memory lifecycle (status,
+                                   supersession, forget) + FTS5 hybrid search
+              (services/global_context.py) legacy global-context builder
+              (services/usage.py)  UsageService; token/cost accounting per session
+              (services/settings.py) SettingsService; runtime provider/model
                                    overrides (settings table, `.env` is default)
     │
 LLM backend  (utils/llm.py)    provider factory (get_llm) over
@@ -50,32 +55,43 @@ database     (database.py)     SQLAlchemy + SQLite
    Creating/resuming a chat opens a `Usage` session (`UsageService.start_session`)
    that records the provider and model; the interface calls `chat.close()` on
    exit to stamp `ended_at`.
-2. `send()` saves the user message, builds `[system (+global context snapshot +
-   context instructions + current chat summary), user]` and hands it to
-   `Agent.run(messages)` — the full message history is NOT sent.
+2. `send()` saves the user message, then asks the **ContextEngine**
+   (`services/context/engine.py`) to assemble the prompt: `system` =
+   base prompt + relevant global memories + structured CHAT STATE + protocol
+   instructions, plus the most recent verbatim turns as messages — all packed
+   under a token budget derived from `LLM_LOCAL_CONTEXT_WINDOW`. The full
+   message history is NOT sent; the engine reads it from the DB.
 3. The agent sends the messages + tool schemas (CRUD, memory, **and** the
    scoped files/web/system/ask tools) to the model.
-4. If the model asks for tools, the agent executes them and feeds results back.
-   `ask_user` blocks on the interface's question handler; `run_command` blocks
-   on the user's explicit approval before executing anything.
+4. If the model asks for tools, the agent executes them and feeds results back
+   (results are bounded in size; guardrails cap loop steps at `MAX_AGENT_STEPS=8`
+   and abort repeated identical calls). `ask_user` blocks on the interface's
+   question handler; `run_command` blocks on the user's explicit approval before
+   executing anything.
 5. Repeats until the model produces a plain-text answer.
 6. Context persistence: a `<context>...</context>` block in the reply is
-   **merged** into the stored chat context (`_set_context` → `_merge_contexts`,
-   which accumulates topics and never overwrites history); if the model sent no
-   block, the agent's recorded tool results are folded in automatically
-   (`_synthesize_tool_context`) and durable tools (`fetch_page`, `web_search`,
-   `read_file`, `ask_user`) are captured as low-importance global facts
-   (`_capture_global_memories`, gated by `AUTO_MEMORIZE=1` in `.env`). `send()`
-   saves the cleaned assistant reply and returns it.
+   extracted and merged into the stored chat context — `_set_context` writes the
+   JSON chat state into `chats.state` (mirrored as text in the legacy
+   `chats.context`) via the engine's `parse_state`/`merge_summary`/`serialize`.
+   If the model sent no block, the agent's recorded tool results are folded in
+   automatically (`_synthesize_tool_context`, per-tool compactors) and durable
+   tools (`read_file`, `ask_user` — **not** web tools) are captured as
+   low-importance global facts with `source_message_id` provenance
+   (`_capture_global_memories`, gated by `AUTO_MEMORIZE=1`). `send()` saves the
+   cleaned assistant reply and returns it.
 7. The agent accumulates provider-reported token usage (`take_usage()`); each
    `send()`/`send_stream()` records it into the open session. Cost is estimated
    per token (Gemini pricing in `services/usage.py`; local is tracked but free).
 
 Global memory sits under the per-chat context: memories persist across chats
-(`services/memory.py`, `models/memory.py`), and a small bounded snapshot of them
-(`services/global_context.py`) is auto-injected into the prompt. The model can
-retrieve more on demand via `search_global_memory` / `get_chat_context` /
-`search_chat_history`, and persist durable knowledge via `save_memory`.
+(`services/memory.py`, `models/memory.py`). Each entry carries importance,
+confidence, a lifecycle `status` (active/superseded/archived), `superseded_by`,
+`source_chat_id`/`source_message_id` provenance, and access stats. `MemoryService`
+handles duplicate guard, subject-based auto-supersession on create, archive via
+`forget`, and a hybrid ranker (SQLite **FTS5** `memories_fts` index OR ilike
+fallback × importance × confidence). The model reaches memories only through the
+controlled tools (`search_global_memory`, `get_memory`, `get_chat_context`,
+`search_chat_history`, `save_memory`, `forget_memory`).
 
 ## Tool safety model
 
@@ -113,7 +129,10 @@ routes to the free backend (`LLM_OPENAI_API_KEY`/`LLM_OPENROUTER_API_KEY`,
 `LLM_OPENAI_MODEL` default `openrouter/free`; ~140 free model ids in
 `resources/models/free_models.json`). `LLM_PROVIDER=free` uses a keyless
 endpoint selected by `LLM_FREE_ENDPOINT`/`LLM_FREE_MODEL` (or overridden by
-`LLM_FREE_BASE_URL`). Locally, the per-backend model vars are
+`LLM_FREE_BASE_URL`). `LLM_PROVIDER=zen` routes through OpenCode Zen's
+OpenAI-compatible gateway (`LLM_OPENCODE_API_KEY`, `LLM_ZEN_MODEL` default a
+free tier, `LLM_ZEN_BASE_URL` default `https://opencode.ai/zen/v1`) — a thin
+subclass of the `openai` provider (see `api.md`). Locally, the per-backend model vars are
 `LLM_LOCAL_CONTEXT_WINDOW`, `LLM_LOCAL_CPU_THREADS`, `LLM_LOCAL_GPU_LAYERS`,
 `LLM_LOCAL_VERBOSE`.
 Relative paths in `.env` are resolved against the **current working directory**
@@ -123,7 +142,8 @@ Tool gates: `ALLOWED_PLACES` (default `workspace=./workspace`) scopes the file
 and command tools; `ENABLE_SHELL_TOOLS=0` (set `1` to allow approved shell
 commands); `WEB_SEARCH_PROVIDER=bing` (only bing/no-key is implemented so far);
 `AUTO_MEMORIZE=1` (auto-capture durable tool findings as low-importance global
-facts; `0` disables).
+facts; `0` disables — captured tools are only `read_file`/`ask_user`, never
+web results); `MAX_AGENT_STEPS=8` (caps the agent tool-loop iterations).
 
 Local model layout: the GGUF is a fixed name `model.gguf` inside a per-model
 directory, resolved as `LLM_LOCAL_MODELS_DIR/LLM_LOCAL_MODEL_NAME/model.gguf`.

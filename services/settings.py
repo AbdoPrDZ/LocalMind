@@ -32,6 +32,8 @@ def _model_env(provider: str) -> str:
     return "LLM_OPENAI_MODEL"
   if provider == "free":
     return "LLM_FREE_MODEL"
+  if provider == "zen":
+    return "LLM_ZEN_MODEL"
   return "LLM_LOCAL_MODEL_NAME"
 
 
@@ -120,4 +122,8 @@ def resolve_model(provider: str) -> str:
     from utils.providers.free import DEFAULT_FREE_MODEL
 
     return ENV.get("LLM_FREE_MODEL", default=DEFAULT_FREE_MODEL)
+  if provider == "zen":
+    from utils.providers.zen import DEFAULT_ZEN_MODEL
+
+    return ENV.get("LLM_ZEN_MODEL", default=DEFAULT_ZEN_MODEL)
   return ENV.get("LLM_LOCAL_MODEL_NAME", default="unknown")

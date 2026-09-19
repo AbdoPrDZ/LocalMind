@@ -9,6 +9,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Context Engine v2** (`services/context/`): the prompt is no longer built in
+  `apps/base.py`. A `ContextEngine` now assembles each turn under a token budget
+  derived from the model context window (`LLM_LOCAL_CONTEXT_WINDOW`): base system
+  prompt + query-aware relevant global memories + structured CHAT STATE
+  (topics/summary/pending) + the most recent verbatim turns. The old
+  accumulate-only text context becomes a JSON chat state (`chats.state` column,
+  `services/context/state.py`) kept in sync with the legacy `chats.context`.
+  Debugging: `Chat` exposes a context debugger and the cmd app prints a
+  per-section token table via `/context`.
+- **Query-aware global memory**: every turn the engine retrieves only memories
+  relevant to the new message (candidate selection + hybrid keyword/importance/
+  confidence ranking) instead of injecting a static top-N snapshot.
+- **Memory lifecycle** (`models/memory.py` + `services/memory.py`): new columns
+  `confidence`, `status` (active/superseded/archived), `superseded_by`,
+  `source_message_id`, `last_accessed_at`, `access_count`. `create` guards exact
+  duplicates and auto-supersedes contradicted same-subject active memories
+  (subject tokens, boilerplate words ignored); `forget(id)` / `forget_by_query`
+  archive; `conflicts()` / `stale(days)` inspections power `/global conflicts`
+  and `/global stale`. Provenance now records the triggering user message.
+- **FTS5 retrieval**: `init_db()` builds an external-content `memories_fts`
+  virtual table + sync triggers when SQLite FTS5 is available; `search` uses
+  tokenized MATCH candidates (ilike fallback without FTS5), re-ranked and
+  access-stats updated.
+- **`forget_memory` tool** + `/memory search|forget` commands in the cmd app.
+- **Agent guardrails** (`utils/agent.py`): loop capped at `MAX_AGENT_STEPS`
+  (default 8, `.env`); repeated identical `name+arguments` tool calls (3×) abort
+  with a loop-limit answer; tool results serialized back to the model are bounded
+  to `MAX_TOOL_RESULT_CHARS` (6000). Memory tools and the unknown-tool path
+  return structured `{"ok": false, "error": {code, message, retryable}}`
+  envelopes (`utils/tool.py::tool_error`).
+- **Per-tool result compactors** in `apps/base.py` (`_collapse_tool_result`):
+  web search results, fetched pages and file reads are summarized contextually
+  when folded into the chat context instead of a blind 600-char slice.
+- `MAX_AGENT_STEPS` documented in `.env.example`.
+- **OpenCode Zen provider** (`utils/providers/zen.py`, `LLM_PROVIDER=zen`): a
+  thin subclass of the `openai` provider that routes through OpenCode Zen's
+  OpenAI-compatible gateway (`https://opencode.ai/zen/v1`) with a single API key
+  (`LLM_OPENCODE_API_KEY`, fallback `OPENCODE_API_KEY`; `LLM_ZEN_MODEL`,
+  default `deepseek-v4-flash-free`; `LLM_ZEN_BASE_URL` overrides
+  the endpoint). Registered in the factory, wired into `/select model zen <id>`
+  and `services/settings.py` (`LLM_ZEN_MODEL` env mapping + key validation in
+  the cmd app). Zen requires an `x-opencode-session` header; it is sent when
+  `LLM_ZEN_SESSION_ID` (or `OPENCODE_SESSION_ID`) is set. Zen free-tier ids are
+  OpenCode-app-only and reject raw API calls; the provider detects those
+  rejections (`MissingSessionID`/unavailable) and replies with actionable
+  guidance instead of a raw HTTP 400.
+
+### Changed
+
+- Auto-capture tool set narrowed to durable findings only: `read_file` and
+  `ask_user` results become global facts; `web_search`/`fetch_page` results are
+  **never** auto-remembered (they are transient search data).
+- `save_memory` provenance includes `source_message_id` (the user message that
+  triggered the save session).
+- `services/global_context.py` snapshot is retained only for `/global` display;
+  prompt injection now goes through the engine's query-aware retrieval.
+
+### Fixed
+
+- Retrieval eligibility was keyword-driven, not score-driven (score floor could
+  wrongly exclude a high-importance memory) (`services/context/retrieval.py`).
+- `_recency` ranking accepted only dates, not ISO timestamps
+  (`services/context/ranking.py`).
+- `init_db()` previously failed to create the FTS index because SQLite rejects
+  two statements in one `.execute()` — rebuild split across executes.
+
+### Added
+
 - OpenAI-compatible `openai` LLM provider (`utils/providers/openai.py`): one
   backend that serves both free online models and Gemini. Model ids starting
   with `gemini-` call Gemini's OpenAI-compatible endpoint

@@ -24,9 +24,10 @@ CLI); `web`, `api`, and `desktop` are planned.
 ```text
 interfaces/  (apps/)       cmd (done) | web, api, desktop (planned)
     │  Chat.create() / Chat.load() / chat.send()
-shared service (apps/base.py)   Chat: ENV init, DB init, agent build,
-                                persists Chat + Message, sends chat context
-                                (not full history) to the LLM
+shared service (apps/base.py)   Chat: ENV init, DB init, agent build, persists
+                                Chat + Message, prompts the LLM through the
+                                token-budgeted ContextEngine
+                                (services/context/), not the full history
     │
 agent        (utils/agent.py)  tool-calling loop, handles native + Qwen3 <tool_call>
     │
@@ -45,10 +46,15 @@ generation, not the product goal. `Chat` / `Message` models are the product's
 conversation store.
 
 The agent also carries **global memory** across conversations: memories
-(facts, preferences, decisions, topics) persist in the `Memory` table, a small
-bounded snapshot is injected into every prompt, and the model retrieves/extends
-it through `search_global_memory`, `get_memory`, `get_chat_context`,
-`search_chat_history`, and `save_memory`.
+(facts, preferences, decisions, topics) persist in the `Memory` table with
+importance/confidence scores and a lifecycle status (active, superseded,
+archived). Each turn the **ContextEngine** (`services/context/`) injects only the
+retrievable memories relevant to the current message (query-aware, FTS5-backed
+ranking), packs them with the structured chat state into the token budget, and
+the model retrieves/extends it through `search_global_memory`, `get_memory`,
+`get_chat_context`, `search_chat_history`, `save_memory`, and `forget_memory`.
+Contradicted facts are auto-superseded, duplicates guarded, and web results are
+never auto-remembered.
 
 Beyond CRUD and memory, the agent gets a safe, toolset that lets it actually
 do things — each gated so the model cannot misbehave on its own:
@@ -71,11 +77,12 @@ do things — each gated so the model cannot misbehave on its own:
   by the same generic CRUD tools as every other model.
 
 Every tool result is **remembered for you**: the chat context accumulates the
-whole conversation (topics are appended, never overwritten), and tool findings —
-fetched pages, web searches, read files, your answers — are auto-captured as
-low-importance global facts (`AUTO_MEMORIZE=1` in `.env`, set `0` to disable),
-so durable knowledge (your GitHub profile, a URL, a file you asked it to read)
-survives across chats even when the model never echoes it back.
+whole conversation (topics are appended, never overwritten), and durable tool
+findings — read files and your answers — are auto-captured as low-importance
+global facts (`AUTO_MEMORIZE=1` in `.env`, set `0` to disable), so knowledge
+survives across chats even when the model never echoes it back. Web search and
+page-fetch results are deliberately NOT auto-captured: they are transient
+search data, not durable knowledge.
 
 ```dotenv
 ALLOWED_PLACES=workspace=./workspace   # optional: docs=./docs, scratch=./tmp, ...
@@ -153,6 +160,19 @@ The backend is switched with `LLM_PROVIDER` in `.env`:
   promo/budget notices. A built-in notice-guard detects those ads, retries once
   (nudging the model not to advertise), and raises a clear error instead of
   showing you the ad — a reply is never surfaced polluted.
+- **`zen`** — OpenCode Zen (https://opencode.ai/zen), a curated, pay-per-use
+  gateway of tested models plus a few free tiers behind one OpenAI-compatible
+  endpoint. It reuses the `openai` provider's HTTP/SSE machinery pointed at
+  `https://opencode.ai/zen/v1` (`LLM_OPENCODE_API_KEY`, `LLM_ZEN_MODEL` from
+  https://opencode.ai/zen/v1/models; `LLM_ZEN_BASE_URL` overrides the default,
+  and the default model is a free tier). Every request carries an
+  `x-opencode-session` header when `LLM_ZEN_SESSION_ID` (or
+  `OPENCODE_SESSION_ID`) is set — Zen requires it, and a real OpenCode session
+  id is what unlocks the **free-tier ids** (`*-free`, `big-pickle`, ...)
+  outside the OpenCode app. Some Zen families (the `gpt-*` Responses-API
+  models, native Anthropic/Google endpoints) aren't served via
+  chat-completions and won't work with this provider. Usage tokens are counted;
+  cost is estimated only for `gemini-*` ids (other catalog ids report 0).
 
 ```dotenv
 LLM_PROVIDER=gemini
@@ -173,6 +193,14 @@ LLM_PROVIDER=free
 LLM_FREE_ENDPOINT=pollinations           # keyless endpoint in resources/models/keyless_models.json
 LLM_FREE_MODEL=openai-fast               # model at that endpoint (default if omitted)
 # LLM_FREE_BASE_URL=https://...         # optional override; no API key is ever required
+```
+
+```dotenv
+LLM_PROVIDER=zen
+LLM_OPENCODE_API_KEY=your-zen-key        # https://opencode.ai/zen
+LLM_ZEN_MODEL=deepseek-v4-flash-free     # from https://opencode.ai/zen/v1/models
+# LLM_ZEN_SESSION_ID=your-opencode-session-id   # x-opencode-session header; unlocks free-tier ids
+# LLM_ZEN_BASE_URL=https://opencode.ai/zen/v1
 ```
 
 Providers live in `utils/providers/` and all speak the same OpenAI-style
@@ -216,8 +244,9 @@ commands are rejected locally, never saved as messages.
 | `/h`, `/help`    | Show the command help.                                          |
 | `/q`, `/quit`    | End the session.                                                |
 | `/usage`         | Show token/cost usage for this chat and in total (by model).    |
-| `/context`       | Show the running chat context summary.                          |
-| `/g`, `/global`  | Show the global memory context (cross-chat knowledge).          |
+| `/context`       | Debug the context engine: per-section token table, retrieved memories with scores, budget. |
+| `/g`, `/global`  | Global memory: plain call shows the snapshot; `search <q>`, `conflicts`, `stale [N]`, `inspect <id>` drill deeper. |
+| `/memory`        | `search <q>` and `forget <id or q>` memory records.             |
 | `/chats`         | List all chats (id, created, message count, context preview).   |
 | `/select chat <id>` | Switch to (resume) another chat.                             |
 | `/select model <provider> <name>` | Switch LLM provider/model (persisted).   |
@@ -237,9 +266,10 @@ the choice in the `settings` table — the `.env` values stay as defaults:
 /select model openai openrouter/free
 ```
 
-The provider must be one of `PROVIDERS` (`local`, `gemini`, `openai`); a gemini
-selection requires `LLM_GEMINI_API_KEY` in `.env`, and a local selection requires
-the model to be installed (`scripts/install_model.py <name>`). The `openai`
+The provider must be one of `PROVIDERS` (`local`, `gemini`, `openai`, `free`); a gemini
+selection requires `LLM_GEMINI_API_KEY` in `.env`, a zen selection requires
+`LLM_OPENCODE_API_KEY`, and a local selection requires the model to be
+installed (`scripts/install_model.py <name>`). The `openai`
 provider serves both free routers and Gemini through one OpenAI-compatible
 interface: any model starting with `gemini-` goes to Gemini, anything else
 routes to the free backend (`LLM_OPENAI_BASE_URL`, default OpenRouter). See

@@ -200,6 +200,7 @@ def test_tool_registry_contains_memory_tools(db):
     "get_chat_context",
     "search_chat_history",
     "save_memory",
+    "forget_memory",
   }
 
 
@@ -230,14 +231,18 @@ def test_save_and_search_tools(db):
 def test_get_memory_tool(db):
   memory = MemoryService.create("fact", "Durable fact.", importance=4)
   assert _tool("get_memory").call({"memory_id": memory["id"]})["id"] == memory["id"]
-  assert _tool("get_memory").call({"memory_id": 999_999}) == {"error": "Memory not found"}
+  missing = _tool("get_memory").call({"memory_id": 999_999})
+  assert missing["ok"] is False
+  assert missing["error"]["code"] == "not_found"
 
 
 def test_get_chat_context_tool(db):
   chat_id = _make_chat(context="We discussed FCM.")
   result = _tool("get_chat_context").call({"chat_id": chat_id})
   assert result == {"chat_id": chat_id, "context": "We discussed FCM."}
-  assert _tool("get_chat_context").call({"chat_id": 999_999}) == {"error": "Chat not found"}
+  missing = _tool("get_chat_context").call({"chat_id": 999_999})
+  assert missing["ok"] is False
+  assert missing["error"]["code"] == "not_found"
 
 
 def test_search_chat_history_tool(db):
@@ -255,3 +260,235 @@ def test_tools_validate_arguments(db):
     _tool("get_memory").call({"memory_id": "abc"})
   with pytest.raises(ValidationError):
     _tool("save_memory").call({"type": "bogus", "content": "x"})
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: FTS5 hybrid retrieval
+# ---------------------------------------------------------------------------
+
+
+def test_fts_token_match_finds_scattered_words(db):
+  from database import is_fts_available
+
+  if not is_fts_available():
+    pytest.skip("FTS5 not available in this SQLite build")
+
+  MemoryService.create("fact", "The weather forecast API is OpenWeather.", importance=4)
+  MemoryService.create("fact", "OpenWeather offers a free tier.", importance=1)
+
+  # "OpenWeather free tier" is not a substring of any entry — FTS token match
+  # still retrieves the low-importance entry that hits all three words.
+  results = MemoryService.search("OpenWeather free tier")
+  assert len(results) == 1
+  assert results[0]["content"].startswith("OpenWeather offers")
+
+
+def test_fts_fallback_without_index(db, monkeypatch):
+  import database as database_mod
+
+  monkeypatch.setattr(database_mod, "_FTS_AVAILABLE", False)
+
+  MemoryService.create("fact", "OpenWeather offers a free tier.", importance=1)
+  MemoryService.create("fact", "The weather forecast API is OpenWeather.", importance=4)
+  results = MemoryService.search("free tier")
+  assert len(results) == 1
+  assert results[0]["content"].startswith("OpenWeather offers")
+
+
+# ---------------------------------------------------------------------------
+# Auto-capture: durable tool findings become facts; transient web data does not
+# ---------------------------------------------------------------------------
+
+class _CaptureStubAgent:
+  system_prompt = "sys"
+
+  def __init__(self, results):
+    self._results = results
+
+  def run(self, messages):
+    return "ok"
+
+  def take_tool_results(self):
+    return self._results
+
+  def take_usage(self):
+    return {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+
+
+def test_web_search_and_fetch_never_auto_captured(db, monkeypatch):
+  from apps.base import Chat
+
+  results = [
+    {
+      "name": "web_search",
+      "result": {
+        "query": "price of X",
+        "results": [{"title": "X", "url": "http://example.test", "snippet": "the price"}],
+      },
+    },
+    {"name": "fetch_page", "result": {"url": "http://example.test", "text": "X costs 5."}},
+    {"name": "ask_user", "result": {"answer": "React Native"}},
+  ]
+  monkeypatch.setattr(
+    "apps.base._build_agent",
+    lambda *a, **k: _CaptureStubAgent(results),
+  )
+
+  chat = Chat.create()
+  chat.send("Search the price of X.")
+  chat.close()
+
+  contents = [memory["content"] for memory in MemoryService.list()]
+  assert any('The user answered "React Native"' in content for content in contents)
+  assert not any("Web search" in content or "Fetched page" in content for content in contents)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: supersession, status & forgetting
+# ---------------------------------------------------------------------------
+
+
+def test_supersedes_same_subject_contradiction(db):
+  old = MemoryService.create("fact", "LocalMind uses SQLite.", importance=2)
+  MemoryService.create("fact", "LocalMind uses PostgreSQL.", importance=2)
+
+  stale = MemoryService.get(old["id"])
+  assert stale["status"] == "superseded"
+  assert stale["superseded_by"] == old["id"] + 1
+
+  active = MemoryService.list(limit=50)
+  assert all(item["status"] == "active" for item in active)
+  assert all(item["content"] != "LocalMind uses SQLite." for item in active)
+
+
+def test_supersedes_flutter_to_react_native_preference(db):
+  # Review T2: the same subject (mobile development) with a changed value.
+  flutter = MemoryService.create(
+    "preference", "User prefers Flutter for mobile development.", importance=3
+  )
+  react = MemoryService.create(
+    "preference", "User prefers React Native for mobile development.", importance=3
+  )
+  assert MemoryService.get(flutter["id"])["status"] == "superseded"
+  assert MemoryService.get(flutter["id"])["superseded_by"] == react["id"]
+  assert MemoryService.get(react["id"])["status"] == "active"
+
+
+def test_no_supersede_without_shared_subject(db):
+  # Only boilеrplate "User prefers X." is shared — different subjects stay active.
+  flutter = MemoryService.create("preference", "User prefers Flutter.", importance=3)
+  vim = MemoryService.create("preference", "User prefers Vim.", importance=3)
+  assert MemoryService.get(flutter["id"])["status"] == "active"
+  assert MemoryService.get(vim["id"])["status"] == "active"
+
+
+def test_no_supersede_when_subjects_differ(db):
+  MemoryService.create("fact", "LocalMind uses SQLite.", importance=2)
+  MemoryService.create("preference", "User prefers Flutter.", importance=3)
+
+  active = MemoryService.list(limit=50)
+  assert len(active) == 2
+  assert all(item["status"] == "active" for item in active)
+
+
+def test_forget_archives_memory(db):
+  created = MemoryService.create("fact", "EMoveX backend runs Node 18.")
+  assert MemoryService.search("Node") != []
+  assert MemoryService.forget(created["id"]) is True
+  assert MemoryService.search("Node") == []
+  assert [m["id"] for m in MemoryService.list(status="archived")] == [created["id"]]
+  assert MemoryService.forget(999_999) is False
+
+
+def test_forget_by_query(db):
+  MemoryService.create("fact", "Flutter requires the Dart SDK.", importance=2)
+  MemoryService.create("topic", "Flutter is my favorite app to build.", importance=2)
+  MemoryService.create("fact", "LocalMind is an offline LLM platform.", importance=2)
+
+  archived = MemoryService.forget_by_query("flutter")
+  assert len(archived) == 2
+  remaining = MemoryService.list(limit=50)
+  assert len(remaining) == 1
+  assert remaining[0]["content"] == "LocalMind is an offline LLM platform."
+
+
+def test_forget_memory_tool(db):
+  memory = MemoryService.create("fact", "EMoveX uses Odoo.", importance=3)
+  assert _tool("forget_memory").call({"memory_id": memory["id"]})["success"] is True
+  assert MemoryService.search("Odoo") == []
+  missing = _tool("forget_memory").call({"memory_id": 999_999})
+  assert missing["ok"] is False
+  assert missing["error"]["code"] == "not_found"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: usage stats & keyword ranking
+# ---------------------------------------------------------------------------
+
+
+def test_search_tracks_access_stats(db):
+  created = MemoryService.create("fact", "LocalMind runs fully offline.")
+  assert created["access_count"] == 0
+  MemoryService.search("offline")
+  MemoryService.search("offline")
+  again = MemoryService.get(created["id"])
+  assert again["access_count"] == 2
+  assert again["last_accessed_at"] is not None
+
+
+def test_search_ranks_keyword_match_first(db):
+  MemoryService.create("fact", "The weather forecast API is OpenWeather.", importance=4)
+  MemoryService.create("fact", "OpenWeather offers a free tier.", importance=1)
+
+  # "free tier" only occurs in the low-importance entry; substring+keyword still
+  # finds it (keyword overlap, not importance, drives ranking here).
+  results = MemoryService.search("free tier")
+  assert len(results) == 1
+  assert results[0]["content"].startswith("OpenWeather offers")
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: conflict & staleness inspection
+# ---------------------------------------------------------------------------
+
+
+def test_conflicts_detects_same_subject_active_pairs(db):
+  MemoryService.create("fact", "LocalMind persists chats.", importance=2)
+  # A later edit (not a fresh create) introduces the contradiction — updates do
+  # not run auto-supersession, so both remain active and surface as a conflict.
+  other = MemoryService.create("fact", "EMoveX uses Odoo.", importance=2)
+  MemoryService.update(other["id"], content="LocalMind stores chats in memory only.")
+
+  pairs = MemoryService.conflicts()
+  assert len(pairs) == 1
+  assert pairs[0]["overlap"] >= 0.5
+  assert set(pairs[0]["shared_subject"]) == {"localmind", "chats"}
+
+
+def test_conflicts_empty_without_overlap(db):
+  MemoryService.create("fact", "LocalMind persists chats.", importance=2)
+  MemoryService.create("fact", "EMoveX uses Odoo.", importance=2)
+  assert MemoryService.conflicts() == []
+
+
+def test_stale_memories(db):
+  from datetime import timedelta
+
+  from database import get_session as raw_session
+  from models.memory import Memory
+  from utils.time import utcnow
+
+  fresh = MemoryService.create("fact", "Fresh fact about Odoo.", importance=1)
+  old = MemoryService.create("fact", "Old fact about Odoo.", importance=1)
+
+  session = raw_session()
+  row = session.get(Memory, old["id"])
+  row.updated_at = utcnow() - timedelta(days=45)
+  row.access_count = 0
+  session.commit()
+  session.close()
+
+  stale = MemoryService.stale(days=30)
+  assert [m["id"] for m in stale] == [old["id"]]
+  assert all(m["id"] != fresh["id"] for m in stale)
+  assert MemoryService.stale(days=90) == []

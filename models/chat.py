@@ -20,6 +20,10 @@ class Chat(BaseModel):
 
   context: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+  #: Structured JSON per-chat state (see services/context/state.py). The old
+  #: ``context`` column mirrors ``state["last_summary"]`` for legacy readers.
+  state: Mapped[str | None] = mapped_column(Text, nullable=True)
+
   messages: Mapped[list["Message"]] = relationship(
     back_populates="chat",
     cascade="all, delete-orphan",

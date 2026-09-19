@@ -8,7 +8,9 @@ import questionary
 
 from apps.base import Chat
 from database import init_db
+from services.context.engine import debug_context
 from services.global_context import build_global_context
+from services.memory import MemoryService
 from services.settings import SettingsService, resolve_model, resolve_provider
 from utils.env import ENV
 from utils.llm import reset_llm
@@ -31,19 +33,23 @@ SLASH_COMMANDS = {
   "/select": "select",
   "/settings": "settings",
   "/tools": "tools",
+  "/memory": "memory",
 }
 
 HELP_TEXT = """Commands:
   /h, /help            show this help
   /q, /quit            end the session
   /usage               show token/cost usage for this chat and globally
-  /context             show the running chat context summary
-  /g, /gc, /global     show the global memory context (cross-chat knowledge)
+  /context             debug the context engine (sections, budget, retrieved)
+  /g, /gc, /global     global snapshot; /global search <q> | conflicts | stale [N] | inspect <id>
   /chats               list all chats with message counts
   /select chat <id>    switch to another chat (resumes it)
   /select model <provider> <name>  switch LLM provider/model (persisted)
   /settings            show the active provider/model and overrides
   /tools               list the tools the assistant can call
+  /memory search <q>   search global memory
+  /memory forget <id>  archive one memory by id
+  /memory forget <q>   archive memories matching a query
 
 Anything else is sent to the assistant as a prompt."""
 
@@ -76,23 +82,28 @@ def _print_usage_summary(chat: Chat) -> None:
     print(f"  chat #{chat.id} total: {summary['chat_totals']['total_tokens']} tokens · ${summary['chat_totals']['cost']:.6f}")
     print(f"  global: {summary['global_totals']['total_tokens']} tokens · ${summary['global_totals']['cost']:.6f} "
           f"across {summary['global_totals']['sessions']} sessions")
-    return
+  else:
+    print(
+      f"Usage: chat #{chat.id} · {session['provider']} ({session['model']}) · "
+      f"{session['prompt_tokens']} in / {session['completion_tokens']} out tokens · "
+      f"${session['cost']:.6f}"
+    )
+    print(
+      f"  chat #{chat.id} total: {summary['chat_totals']['total_tokens']} tokens · "
+      f"${summary['chat_totals']['cost']:.6f} (all sessions)"
+    )
+    print(
+      f"  global: {summary['global_totals']['total_tokens']} tokens · "
+      f"${summary['global_totals']['cost']:.6f} across {summary['global_totals']['sessions']} sessions"
+    )
+    for row in summary["by_model"]:
+      print(f"  by model: {row['model']} · {row['total_tokens']} tokens · ${row['cost']:.6f}")
 
-  print(
-    f"Usage: chat #{chat.id} · {session['provider']} ({session['model']}) · "
-    f"{session['prompt_tokens']} in / {session['completion_tokens']} out tokens · "
-    f"${session['cost']:.6f}"
-  )
-  print(
-    f"  chat #{chat.id} total: {summary['chat_totals']['total_tokens']} tokens · "
-    f"${summary['chat_totals']['cost']:.6f} (all sessions)"
-  )
-  print(
-    f"  global: {summary['global_totals']['total_tokens']} tokens · "
-    f"${summary['global_totals']['cost']:.6f} across {summary['global_totals']['sessions']} sessions"
-  )
-  for row in summary["by_model"]:
-    print(f"  by model: {row['model']} · {row['total_tokens']} tokens · ${row['cost']:.6f}")
+  from apps.base import _model_context_window
+  from utils.agent import _max_agent_steps
+
+  window = _model_context_window()
+  print(f"  context: window {window} tok · max agent steps {_max_agent_steps()}")
 
 
 def _print_chats() -> None:
@@ -169,6 +180,10 @@ def _select_model(provider: str, model: str) -> str | None:
 
     if model.strip().lower() not in available_models() and not ENV.get("LLM_FREE_BASE_URL"):
       return f"Model '{model}' is not a keyless model of this endpoint. Available: {', '.join(available_models())}."
+  elif provider == "zen":
+    api_key = ENV.get("LLM_OPENCODE_API_KEY") or ENV.get("OPENCODE_API_KEY")
+    if not api_key:
+      return "Set LLM_OPENCODE_API_KEY in .env before using LLM_PROVIDER=zen. Create a key at https://opencode.ai/zen."
   else:
     try:
       path = os.path.join(ENV.get_models_dir(), model, "model.gguf")
@@ -181,6 +196,124 @@ def _select_model(provider: str, model: str) -> str | None:
   SettingsService.set_model(provider, model)
   reset_llm()
   return None
+
+
+def _handle_memory(parts: list[str]) -> None:
+  """Handle /memory search <q> and /memory forget <id|q>."""
+  sub = parts[1].lower() if len(parts) > 1 else ""
+  rest = " ".join(parts[2:]).strip()
+
+  if sub == "search" and rest:
+    matches = MemoryService.search(rest)
+    if not matches:
+      print(f"\nNo global memories match {rest!r}.")
+      return
+    print(f"\nGlobal memory matches for {rest!r}:")
+    for item in matches:
+      _print_memory_line(item)
+    return
+
+  if sub == "forget" and rest:
+    if rest.isdigit():
+      memory_id = int(rest)
+      memory = MemoryService.get(memory_id)
+      if memory is None or not MemoryService.forget(memory_id):
+        print(f"\nNo memory with id {memory_id}.")
+        return
+      print(f"\nForgotten: [{memory['id']}] ({memory['type']}) {memory['content']}")
+      return
+    archived = MemoryService.forget_by_query(rest)
+    if not archived:
+      print(f"\nNo active memories match {rest!r}.")
+      return
+    print(f"\nForgotten {len(archived)} memories:")
+    for item in archived:
+      _print_memory_line(item)
+    return
+
+  print("\nUsage: /memory search <query> | /memory forget <id> | /memory forget <query>")
+
+
+def _print_memory_line(memory) -> None:
+  print(f"  [{memory['id']}] ({memory['type']}, imp {memory['importance']}, "
+        f"conf {memory['confidence']:.2f}) {memory['content']}")
+
+
+def _handle_global(parts: list[str], chat_id: int) -> None:
+  """Handle /global and its subcommands: search, conflicts, stale, inspect."""
+  sub = parts[1].lower() if len(parts) > 1 else ""
+  rest = " ".join(parts[2:]).strip()
+
+  if sub == "search" and rest:
+    matches = MemoryService.search(rest)
+    if not matches:
+      print(f"\nNo global memories match {rest!r}.")
+      return
+    print(f"\nGlobal memory matches for {rest!r}:")
+    for item in matches:
+      _print_memory_line(item)
+    return
+
+  if sub == "conflicts":
+    conflicts = MemoryService.conflicts()
+    if not conflicts:
+      print("\nNo active memory conflicts found.")
+      return
+    print(f"\n{len(conflicts)} potential memory conflict(s):")
+    for pair in conflicts:
+      subject = ", ".join(pair["shared_subject"]) or "?"
+      print(f"  overlap {pair['overlap']} · shared subject: {subject}")
+      print(f"    [{pair['left']['id']}] ({pair['left']['type']}) {pair['left']['content']}")
+      print(f"    [{pair['right']['id']}] ({pair['right']['type']}) {pair['right']['content']}")
+    return
+
+  if sub == "stale":
+    days = int(rest) if rest.isdigit() else 30
+    stale = MemoryService.stale(days=days)
+    if not stale:
+      print(f"\nNo stale memories (never re-accessed, older than {days}d).")
+      return
+    print(f"\nStale memories (never re-accessed, older than {days}d):")
+    for item in stale:
+      _print_memory_line(item)
+    return
+
+  if sub == "inspect" and rest.isdigit():
+    memory = MemoryService.get(int(rest))
+    if memory is None:
+      print(f"\nNo memory with id {rest}.")
+      return
+    print("\nFull memory entry:")
+    for key, value in memory.items():
+      print(f"  {key}: {value}")
+    return
+
+  snapshot = build_global_context(current_chat_id=chat_id)
+  print(f"\nGlobal context: {snapshot or 'no global memories yet'}")
+
+
+def _print_context_debug(chat: Chat) -> None:
+  """Per-section token table for the last prompt from ContextEngine.debug()."""
+  try:
+    package = debug_context(chat.id)
+    info = package.debug()
+    budget = info["budget"]
+    print(f"\nChat #{info['chat_id']} context engine:")
+    print(f"  window {budget['window']} tok · reserved "
+          f"{budget['reserved_output_tokens']} tok · remaining {budget['remaining_tokens']} tok")
+    print("  sections:")
+    for section_name, tokens in info["sections_tokens"].items():
+      print(f"    {section_name:<12} ~{tokens} tok")
+    for memory in info["memories"]:
+      print(f"  memory: [{memory['id']}] ({memory['type']}, score "
+            f"{memory.get('score', '?')}) {memory['content']}")
+    for entry in info["history"]:
+      print(f"  history: [{entry['message_id']}] ({entry['role']}) {entry['content'][:120]}")
+    if info["state"]:
+      print(f"  chat state: {info['state']}")
+  except Exception as exc:
+    print(f"\nContext debug failed: {exc}")
+  print(f"\nStored chat context: {chat.context or 'no context yet'}")
 
 
 def _handle_select(chat: Chat | None, parts: list[str]) -> Chat | None:
@@ -302,6 +435,9 @@ def interactive(chat: Chat | None) -> Chat | None:
       continue
     if command == "quit":
       break
+    if command == "memory":
+      _handle_memory(parts)
+      continue
     if command == "chats":
       _print_chats()
       continue
@@ -318,10 +454,9 @@ def interactive(chat: Chat | None) -> Chat | None:
       if command == "usage":
         _print_usage_summary(current)
       elif command == "context":
-        print(f"\nChat context: {current.context or 'no context yet'}")
+        _print_context_debug(current)
       elif command == "global":
-        snapshot = build_global_context(current_chat_id=current.id)
-        print(f"\nGlobal context: {snapshot or 'no global memories yet'}")
+        _handle_global(parts, current.id)
       else:
         print(f"\nRegistered tools: {[t.name for t in current.tools]}")
       continue

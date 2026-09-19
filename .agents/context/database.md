@@ -43,8 +43,9 @@ extend the registry; the plumbing does not change.
 `chats` and `messages` are the conversation store used by the `Chat` service in
 `apps/base.py`. Both register read-only (`create/update/delete` disabled) so the
 LLM can never tamper with its own history; only `Chat.send()` writes them. The
-`chats.context` column holds the running conversation summary used instead of
-the full history (see `api.md`).
+`chats.context` column holds the running conversation summary text (mirror of
+`chats.state`, the JSON chat state maintained by the ContextEngine; see
+`api.md`).
 
 `notes` (`models/note.py`) is a full-CRUD example of an LLM-facing store
 (title, content, tags, created/updated by `utils.time.utcnow`); it is served by
@@ -54,16 +55,29 @@ feature means adding a model — not a tool.
 ## Global memory (`models/memory.py`)
 
 `Memory` (table `memories`) persists cross-chat knowledge: `type`
-(fact/preference/decision/topic), `content`, `importance` (1–4, default 2), an
-optional `source_chat_id` FK to `chats.id` for provenance, and created/updated
-timestamps via `utils.time.utcnow`.
+(fact/preference/decision/topic), `content`, `importance` (1–4, default 2),
+`confidence` (0–1, default 0.5), lifecycle `status`
+(active/superseded/archived), `superseded_by` (id of the replacing memory),
+`source_chat_id` + `source_message_id` FKs for provenance, `last_accessed_at` /
+`access_count` (usage stats), and created/updated timestamps via
+`utils.time.utcnow`.
 
 - Deliberately **not** registered via `@register_model`, so no generic CRUD tools
   are generated. The LLM reaches memories only through the memory tools
   (`tools/memory.py`) → `MemoryService` (`services/memory.py`).
+- `MemoryService.create` guards exact duplicates and auto-supersedes active
+  same-subject entries (subject-token overlap, boilerplate words ignored) by
+  setting `status="superseded"`, `superseded_by=new_id`. `forget`/`forget_by_query`
+  archive. `search` ranks candidates with a hybrid FTS5 × importance × confidence
+  score and updates access stats.
 - No Alembic/migration system exists: `init_db()` runs
-  `BaseModel.metadata.create_all(engine)`. Importing `models.memory` in
-  `database.py` is what registers the table.
+  `BaseModel.metadata.create_all(engine)` plus `_ensure_column()` for additive
+  columns on existing tables (all new `memories` columns and `chats.state`).
+  Importing `models.memory` in `database.py` is what registers the table.
+- When SQLite FTS5 is available, `init_db()` also creates the external-content
+  `memories_fts` shadow index + sync triggers and rebuilds it; `search` falls
+  back to ilike plus keyword ranking on builds without FTS5
+  (`database.is_fts_available()`).
 
 ## Usage accounting (`models/usage.py`)
 
@@ -80,10 +94,11 @@ via `@register_model`, so the LLM can neither see nor touch it.
   `totals_by_chat()`, `totals_by_model()`.
 - Cost is an estimate: `estimate_cost()` uses `GEMINI_PRICING_PER_1M` (model
   suffixes `-preview`/`-latest` stripped via `model_base()`); any Gemini model
-  is billed by name no matter which provider serves it (`gemini` or `openai`),
-  everything else costs 0. The Gemini API exposes no exact billed amount or
-  remaining quota. Importing `models.usage` in `database.py` registers the
-  table.
+  is billed by name no matter which provider serves it (`gemini`, `openai`, or
+  `zen` — Zen charges no markup), everything else costs 0 (including paid Zen
+  models, which under-reports usage cost). The Gemini API exposes no exact
+  billed amount or remaining quota. Importing `models.usage` in `database.py`
+  registers the table.
 
 ## Runtime settings (`models/settings.py`)
 
@@ -99,7 +114,8 @@ fallback defaults.
   (returns the default) so it is safe before `init_db()`.
 - Resolution helpers: `resolve_provider()` (setting else `LLM_PROVIDER` or
   `"local"`) and `resolve_model(provider)` (setting else `LLM_GEMINI_MODEL`/
-  `LLM_OPENAI_MODEL`/`LLM_LOCAL_MODEL_NAME`/`unknown`; env var per provider via
+  `LLM_OPENAI_MODEL`/`LLM_FREE_MODEL`/`LLM_ZEN_MODEL`/`LLM_LOCAL_MODEL_NAME`/
+  `unknown`; env var per provider via
   `_model_env()`). Used by usage accounting, `get_llm()` and the cmd
   app's `/settings` display.
 - `utils/llm.py::reset_llm()` drops the cached provider singleton so the next

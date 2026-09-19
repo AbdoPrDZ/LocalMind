@@ -16,10 +16,12 @@ own argparse sees just its arguments.
 ## Chat pipeline
 
 1. Interface creates/loads a chat via `Chat.create()` / `Chat.load(id)`.
-2. `chat.send(text)` saves the user message, builds
-   `[system (+global snapshot +context), user]`.
-3. `Agent.run(messages)` sends the system prompt + global-context snapshot +
-   current chat context + the new user message with tool schemas to the model
+2. `chat.send(text)` saves the user message; the **ContextEngine**
+   (`services/context/engine.py`) then builds the prompt: a `system` message
+   (base prompt + query-aware relevant global memories + CHAT STATE + protocol
+   instructions) plus the most recent verbatim turns, all fitted to a token
+   budget derived from the model context window (`LLM_LOCAL_CONTEXT_WINDOW`).
+3. `Agent.run(messages)` sends that message list + tool schemas to the model
    (NOT the full history).
 4. Model may reply with tool calls (native or Qwen3 `<tool_call>` XML blocks) —
    CRUD tools (`create_*`, `list_*`, …) and memory tools
@@ -36,18 +38,26 @@ own argparse sees just its arguments.
 6. Loop until the model returns a plain-text answer; `clean_answer()` strips the
    `thinking` preamble (and `<thinking>...</thinking>` / template leaks).
 7. Context persistence: if the reply contains a `<context>...</context>` block,
-   `_extract_context()` extracts it and `_set_context()` merges it into the
-   stored chat context (`_merge_contexts` — accumulates, never replaces). When
-   the model sends no block, the agent's recorded `tool_results` are folded in
-   instead (`_synthesize_tool_context`), and durable findings (`fetch_page`,
-   `web_search`, `read_file`, `ask_user`) are auto-captured as low-importance
-   global facts (`_capture_global_memories`). The cleaned assistant reply is
-   then saved and returned.
+   `_extract_context()` extracts it and `_set_context()` writes the updated CHAT
+   STATE (JSON into `chats.state`, mirrored in the legacy `chats.context`;
+   merge/summarize via `services/context/state.py`). When the model sends no
+   block, the agent's recorded `tool_results` are folded in instead
+   (`_synthesize_tool_context`, with per-tool compactors — e.g. web_search →
+   query + titles/URLs — instead of a blind slice), and durable findings
+   (`read_file`, `ask_user` only — web results are deliberately excluded) are
+   auto-captured as low-importance global facts with `source_message_id`
+   provenance (`_capture_global_memories`). The cleaned assistant reply is then
+   saved and returned. Agent guardrails: `MAX_AGENT_STEPS` (default 8) caps the
+   loop and a repeated identical tool call aborts it; tool results are truncated
+   to `MAX_TOOL_RESULT_CHARS`.
 
-Memory workflow: the global-context snapshot primes the model; when it needs
-more it calls `search_global_memory` → optionally `get_chat_context(source
-chat)` or `search_chat_history`; durable findings are stored via `save_memory`
-(duplicate-guarded, provenance `source_chat_id`) — and, since this release,
+Memory workflow: the engine injects only memories relevant to the current turn
+(query-aware retrieval); when the model needs more it calls
+`search_global_memory` (FTS5-backed hybrid ranker) → optionally
+`get_chat_context(source chat)` or `search_chat_history`; durable findings are
+stored via `save_memory` (duplicate guard, provenance `source_chat_id`,
+subject-aware auto-supersession marks contradicted active memories
+`status="superseded"`, and `forget_memory` archives) — and, since this release,
 tool results are also captured automatically so nothing the model fetched once
 is lost if it forgets to save it.
 
@@ -83,14 +93,18 @@ plus global summary first, then closes. Full history is available via
   Every `Chat.create()`/`Chat.load()` call passes it, so `ask_user` and the
   `run_command` approval dialogs work in interactive and single-shot mode.
 - Slash commands (interactive): `/h`/`/help` help, `/q`/`/quit` end, `/usage`
-  show usage summary, `/context` show the chat context, `/g`/`/gc`/`/global`
-  show the global-memory snapshot (`build_global_context`), `/chats` list
-  chats, `/select chat <id>` resume another chat (closing the old usage
-  session), `/select model <provider> <name>` persist a provider/model switch,
+  show usage summary + context budget line, `/context` debug the context engine
+  (per-section token table, retrieved memories with scores, budget),
+  `/g`/`/gc`/`/global` show the global-memory snapshot (`build_global_context`)
+  or `search <q>` / `conflicts` / `stale [N]` / `inspect <id>` subcommands,
+  `/memory search <q>` and `/memory forget <id|q>`, `/chats` list chats,
+  `/select chat <id>` resume another chat (closing the old usage session),
+  `/select model <provider> <name>` persist a provider/model switch,
   `/settings` show the active selection, `/tools` list tools.
 - `/select model` validates provider (must be in `utils.providers.PROVIDERS`),
   checks `LLM_GEMINI_API_KEY` for gemini models (billed via the gemini or openai
-  provider) and an installed `model.gguf` for local, confirms a router
+  provider), `LLM_OPENCODE_API_KEY` for zen, and an installed `model.gguf` for
+  local, confirms a router
   `LLM_OPENAI_API_KEY`/`LLM_OPENROUTER_API_KEY` for non-gemini openai models,
   persists the choice via `SettingsService` (settings table), calls
   `reset_llm()`, and reopens the chat's usage session

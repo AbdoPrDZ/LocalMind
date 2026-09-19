@@ -3,8 +3,9 @@ import re
 from typing import Optional
 from collections.abc import Generator
 
+from utils.env import ENV
 from utils.llm import get_llm
-from utils.tool import Tool
+from utils.tool import Tool, tool_error
 
 TOOL_CALL_RE = re.compile(
   r"<tool_call>(.*?)</tool_call>",
@@ -14,6 +15,48 @@ TOOL_CALL_RE = re.compile(
 # Qwen3 emits " thinking\n...\nresponse\n<reply>": the answer separator is a
 # "response" marker line (spaces tolerated), everything before it is thinking.
 RESPONSE_MARKER_RE = re.compile(r"^\s*response\s*$\n?", re.MULTILINE)
+
+#: Loop guardrails (Phase 4): hard cap on tool-loop iterations and on repeated
+#: identical tool calls; per-result serialization bound for the model context.
+MAX_AGENT_STEPS_DEFAULT = 8
+MAX_IDENTICAL_TOOL_CALLS = 3
+MAX_TOOL_RESULT_CHARS = 6_000
+
+LOOP_LIMIT_ANSWER = (
+  "I hit my step/repetition limit while trying to fulfil that — please "
+  "narrow the request or rephrase it."
+)
+
+
+class _ToolLoopAbort(Exception):
+  pass
+
+
+def _max_agent_steps() -> int:
+  try:
+    return max(int(ENV.get("MAX_AGENT_STEPS", default=str(MAX_AGENT_STEPS_DEFAULT))), 1)
+  except (TypeError, ValueError):
+    return MAX_AGENT_STEPS_DEFAULT
+
+
+def _call_signature(name: str, arguments) -> tuple[str, str]:
+  """Stable identity for a tool call so repetitions are detectable."""
+  try:
+    encoded = json.dumps(arguments, sort_keys=True, default=str)
+  except (TypeError, ValueError):
+    encoded = "_unserializable"
+  return name, encoded
+
+
+def _serialize_tool_result(result) -> str:
+  """Serialize a tool result for the model, bounded to protect the context."""
+  try:
+    text = json.dumps(result, ensure_ascii=False, default=str)
+  except (TypeError, ValueError):
+    text = str(result)
+  if len(text) > MAX_TOOL_RESULT_CHARS:
+    return text[:MAX_TOOL_RESULT_CHARS] + "\n...[truncated]"
+  return text
 
 
 def parse_tool_calls(content: Optional[str]) -> list[dict]:
@@ -102,7 +145,7 @@ class Agent:
     memory, so data gathered through tools survives across turns even when the
     model emits no ``<context>`` block of its own.
     """
-    if isinstance(result, dict) and result.get("error"):
+    if isinstance(result, dict) and (result.get("error") or result.get("ok") is False):
       return
     self.tool_results.append({"name": name, "result": result})
 
@@ -128,6 +171,52 @@ class Agent:
     self.usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     return usage
 
+  def _execute_tool_calls(
+    self,
+    tool_calls: list[dict],
+    messages: list[dict],
+    called: dict,
+  ) -> None:
+    """Execute parsed tool calls, append tool results, guard against loops.
+
+    Raises ``_ToolLoopAbort`` when the model repeats the exact same
+    ``name + arguments`` call too many times in a row.
+    """
+    for call in tool_calls:
+      fn = call.get("function", call)
+
+      name = fn.get("name", "")
+
+      arguments = fn.get("arguments", {})
+      if isinstance(arguments, str):
+        try:
+          arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+          arguments = {}
+
+      signature = _call_signature(name, arguments)
+      called[signature] = called.get(signature, 0) + 1
+      if called[signature] > MAX_IDENTICAL_TOOL_CALLS:
+        raise _ToolLoopAbort()
+
+      tool = self.tool_map.get(name)
+
+      if tool is None:
+        result = tool_error("unknown_tool", f"Unknown tool: {name}")
+      else:
+        result = tool.call(arguments)
+
+      self._record_tool_result(name, result)
+
+      # OpenAI-style tool response. `name` lets remote providers pair the
+      # result with the right function; `tool_call_id` grounds native calls.
+      messages.append({
+        "role": "tool",
+        "name": name,
+        "tool_call_id": call.get("id"),
+        "content": _serialize_tool_result(result),
+      })
+
   def run(self, messages: list[dict]) -> str:
     """Run the tool-loop against a full message history.
 
@@ -140,7 +229,15 @@ class Agent:
 
     self.tool_results = []
 
+    called: dict = {}
+    steps = 0
+    max_steps = _max_agent_steps()
+
     while True:
+      steps += 1
+      if steps > max_steps:
+        return LOOP_LIMIT_ANSWER
+
       response = llm.create_chat_completion(
         messages=messages,
         tools=[tool.schema() for tool in self.tools],
@@ -161,35 +258,10 @@ class Agent:
       if not tool_calls:
         return clean_answer(content)
 
-      for call in tool_calls:
-        fn = call.get("function", call)
-
-        name = fn.get("name", "")
-
-        arguments = fn.get("arguments", {})
-        if isinstance(arguments, str):
-          try:
-            arguments = json.loads(arguments)
-          except json.JSONDecodeError:
-            arguments = {}
-
-        tool = self.tool_map.get(name)
-
-        if tool is None:
-          result = {"error": f"Unknown tool: {name}"}
-        else:
-          result = tool.call(arguments)
-
-        self._record_tool_result(name, result)
-
-        # OpenAI-style tool response. `name` lets remote providers pair the
-        # result with the right function; `tool_call_id` grounds native calls.
-        messages.append({
-          "role": "tool",
-          "name": name,
-          "tool_call_id": call.get("id"),
-          "content": json.dumps(result),
-        })
+      try:
+        self._execute_tool_calls(tool_calls, messages, called)
+      except _ToolLoopAbort:
+        return LOOP_LIMIT_ANSWER
 
   def run_stream(self, messages: list[dict]) -> Generator[str, None, None]:
     """Streaming variant of ``run``.
@@ -210,7 +282,16 @@ class Agent:
     messages = list(messages)
     self.tool_results = []
 
+    called: dict = {}
+    steps = 0
+    max_steps = _max_agent_steps()
+
     while True:
+      steps += 1
+      if steps > max_steps:
+        yield LOOP_LIMIT_ANSWER
+        return
+
       stream = llm.create_chat_completion(
         messages=messages,
         tools=[tool.schema() for tool in self.tools],
@@ -273,30 +354,8 @@ class Agent:
             yield answer[i:i + step]
         return
 
-      for call in tool_calls:
-        fn = call.get("function", call)
-
-        name = fn.get("name", "")
-
-        arguments = fn.get("arguments", {})
-        if isinstance(arguments, str):
-          try:
-            arguments = json.loads(arguments)
-          except json.JSONDecodeError:
-            arguments = {}
-
-        tool = self.tool_map.get(name)
-
-        if tool is None:
-          result = {"error": f"Unknown tool: {name}"}
-        else:
-          result = tool.call(arguments)
-
-        self._record_tool_result(name, result)
-
-        messages.append({
-          "role": "tool",
-          "name": name,
-          "tool_call_id": call.get("id"),
-          "content": json.dumps(result),
-        })
+      try:
+        self._execute_tool_calls(tool_calls, messages, called)
+      except _ToolLoopAbort:
+        yield LOOP_LIMIT_ANSWER
+        return
